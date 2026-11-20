@@ -18,6 +18,26 @@
 
 ---
 
+## Screenshots
+
+### Live Native SDL2 Guest Viewport (Debian x86_64 Installer)
+
+| Interactive Floating HUD & Trackpad Controls | Clean Distraction-Free SDL2 Viewport |
+| :---: | :---: |
+| ![Debian x86_64 SDL2 Viewport with Floating HUD](docs/screenshots/02-debian-sdl2-viewport-hud.png) | ![Debian x86_64 SDL2 Viewport Clean](docs/screenshots/03-debian-sdl2-viewport-clean.png) |
+
+### Material 3 Expressive VM Library, ISO Downloader & Configurator
+
+| VM Library Dashboard | Built-in x86_64 ISO Downloader |
+| :---: | :---: |
+| <img src="docs/screenshots/01-vm-library-dashboard.png" alt="VM Library Dashboard" width="320" /> | <img src="docs/screenshots/04-iso-downloader.png" alt="x86_64 ISO Downloader" width="320" /> |
+
+| SDL2 Viewport, Scaling & Mouse Emulation | Storage, QCOW2 & Boot Media | Networking, Audio & Live QEMU CLI |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/05-vm-config-display-mouse.png" alt="SDL2 Viewport & Mouse Emulation" width="260" /> | <img src="docs/screenshots/06-vm-config-storage-boot.png" alt="Storage & Boot Media" width="260" /> | <img src="docs/screenshots/07-vm-config-peripherals-cli.png" alt="Peripherals & Live QEMU CLI Preview" width="260" /> |
+
+---
+
 ## Why Native SDL2 Instead of VNC?
 
 Traditional Android QEMU frontends spawn QEMU with `-display vnc=127.0.0.1:0` and stream compressed tiles over localhost TCP sockets into a Java/Kotlin VNC client. **QemuSDL** eliminates that bottleneck by binding QEMU's display output directly to Android's `ANativeWindow` (`SurfaceView`) via an in-process SDL2 + OpenGL ES texture streaming pipeline:
