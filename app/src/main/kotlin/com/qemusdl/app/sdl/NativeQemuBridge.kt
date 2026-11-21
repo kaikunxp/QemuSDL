@@ -13,6 +13,8 @@ data class RuntimeProbeStatus(
     val sdl2Loaded: Boolean = false,
     val qemuLoaded: Boolean = false,
     val hasQemuEntry: Boolean = false,
+    val hasLibusb: Boolean = false,
+    val hasLibusbWrap: Boolean = false,
     val sdl2Path: String = "",
     val qemuPath: String = "",
     val detail: String = "Native bridge not initialized"

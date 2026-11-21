@@ -48,9 +48,49 @@ Traditional Android QEMU frontends spawn QEMU with `-display vnc=127.0.0.1:0` an
   - **Trackpad (Relative)** — drag anywhere on screen for relative cursor motion with adjustable sensitivity, 1-finger tap for Left Click, 2-finger tap for Right Click, and 2-finger drag for Mouse Wheel scroll.
   - **Direct Touch (Absolute)** — tap or drag directly at the target screen coordinates to move and left-click immediately (paired with `-device usb-tablet`).
   - **Hover & Tap (Absolute)** — slide your finger to hover the guest cursor at the exact finger position without clicking, then tap with 1 finger for Left Click or 2 fingers for Right Click.
+- **Direct USB OTG Host Passthrough (UsbManager + libusb)** — plug in physical USB flash drives, serial adapters, mice, keyboards, or webcams via USB-C OTG and pass them directly into the x86_64 guest via Android's unprivileged `UsbDeviceConnection.getFileDescriptor()` wrapped by `libusb` / QEMU `usb-host`.
+- **High-Speed xHCI USB 3.0 Emulation** — modern `-device qemu-xhci,id=xhci` controller providing high-speed USB 2.0 and 3.0 ports for the guest OS alongside absolute USB tablet pointer tracking.
 - **Native HID Keyboard & Special Keys HUD** — hardware keyboards, Android IME soft keyboards, sticky `Ctrl`/`Alt` modifiers, function keys (`F1`–`F12`), arrow keys, and `Ctrl+Alt+Del` translate directly to SDL2 scancodes (`SDL_Scancode`).
 - **Built-in First-Time Setup & Official x86_64 ISO Downloader** — guided setup wizard that downloads official bootable x86_64 ISOs (Alpine Linux, Debian 12 Netinst, FreeDOS 1.3, Ubuntu, TinyCore, SystemRescue) and creates sparse QCOW2 v3 virtual disks automatically.
 - **Material 3 Expressive UI** — crafted with `MaterialExpressiveTheme`, `MotionScheme.expressive()`, dynamic wallpaper colors (Android 12+), `HorizontalFloatingToolbar`, `SplitButtonLayout`, `LoadingIndicator`, and adaptive phone/tablet grids.
+
+---
+
+## Direct USB Passthrough Architecture (Rootless Android)
+
+Standard Linux QEMU passes host USB devices using root access to `/dev/bus/usb/*`. On unrooted Android, apps are denied raw access to `/dev/bus/usb`. **QemuSDL** solves this natively without root:
+
+```mermaid
+flowchart TD
+    subgraph Host["Android Host Layer"]
+        OTG["Physical USB OTG Device (Flash Drive, Mouse, Serial)"]
+        UM["android.hardware.usb.UsbManager"]
+        Perm["User Grants USB Permission (System Dialog)"]
+        Conn["UsbDeviceConnection\n(fileDescriptor: int fd)"]
+        Proc["/proc/self/fd/&lt;fd&gt;"]
+    end
+
+    subgraph Guest["In-Process QEMU x86_64 (:qemu_vm)"]
+        Libusb["libusb-1.0 (libusb_wrap_sys_device)"]
+        QemuHost["QEMU hw/usb/host-libusb.c\n(-device usb-host,bus=xhci.0,hostdevice=/proc/self/fd/&lt;fd&gt;)"]
+        Xhci["QEMU xHCI USB 3.0 Controller\n(-device qemu-xhci,id=xhci)"]
+        GuestOS["Guest Operating System (Debian, Alpine, Windows)\n(Loads native drivers & mounts device)"]
+    end
+
+    OTG --> UM
+    UM --> Perm
+    Perm --> Conn
+    Conn --> Proc
+    Proc --> Libusb
+    Libusb --> QemuHost
+    QemuHost --> Xhci
+    Xhci --> GuestOS
+```
+
+1. **Discovery & Permissions**: The UI detects plugged-in OTG devices via `UsbManager.getDeviceList()`, displays Vendor/Product IDs and device classes (Mass Storage, HID, CDC Serial, UVC Video), and requests Android permission.
+2. **Descriptor Handover**: `UsbManager.openDevice()` produces a `UsbDeviceConnection` with an open kernel `fileDescriptor`.
+3. **In-Process Virtual Path**: Because `QemuSdlActivity` runs QEMU in-process, `/proc/self/fd/<fd>` points directly to the open USB character device.
+4. **`libusb_wrap_sys_device()`**: QEMU's `host-libusb.c` opens the descriptor and invokes `libusb_wrap_sys_device()` to bind libusb endpoints directly to Android's open FD without requiring root.
 
 ---
 

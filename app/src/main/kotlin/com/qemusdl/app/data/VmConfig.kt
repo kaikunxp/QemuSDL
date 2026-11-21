@@ -126,6 +126,8 @@ data class VmConfig(
     val networkAdapter: NetworkAdapterModel = NetworkAdapterModel.E1000,
     val audioEnabled: Boolean = true,
     val usbTabletEnabled: Boolean = true,
+    val usbXhciEnabled: Boolean = true,
+    val usbPassthroughDevices: List<UsbPassthroughDevice> = emptyList(),
     val uefiEnabled: Boolean = false,
     val extraArgs: String = "",
     val isSetupComplete: Boolean = true,
@@ -133,6 +135,32 @@ data class VmConfig(
 ) {
     val needsFirstTimeSetup: Boolean
         get() = !isSetupComplete
+}
+
+@Serializable
+data class UsbPassthroughDevice(
+    val vendorId: Int,
+    val productId: Int,
+    val deviceName: String = "",
+    val productName: String = "",
+    val manufacturerName: String = "",
+    val serialNumber: String = "",
+    val enabled: Boolean = true
+) {
+    val vendorIdHex: String
+        get() = "%04x".format(vendorId and 0xFFFF)
+
+    val productIdHex: String
+        get() = "%04x".format(productId and 0xFFFF)
+
+    val displayName: String
+        get() = when {
+            productName.isNotBlank() && manufacturerName.isNotBlank() -> "$manufacturerName $productName"
+            productName.isNotBlank() -> productName
+            manufacturerName.isNotBlank() -> manufacturerName
+            deviceName.isNotBlank() -> deviceName
+            else -> "USB Device [${vendorIdHex}:${productIdHex}]"
+        }
 }
 
 data class VirtualDiskInfo(

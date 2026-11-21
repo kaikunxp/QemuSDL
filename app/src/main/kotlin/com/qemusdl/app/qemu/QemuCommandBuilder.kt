@@ -14,7 +14,8 @@ object QemuCommandBuilder {
         config: VmConfig,
         resolvedDiskPath: String? = null,
         resolvedIsoPath: String? = null,
-        firmwareDir: String? = null
+        firmwareDir: String? = null,
+        activeUsbDeviceFds: Map<String, Int> = emptyMap()
     ): List<String> {
         val args = mutableListOf<String>()
         args += "qemu-system-x86_64"
@@ -59,9 +60,31 @@ object QemuCommandBuilder {
         // Boot order
         args += listOf("-boot", config.bootOrder.qemuFlag)
 
-        // USB controller & absolute pointer tablet (seamless SDL2 touch/mouse tracking)
-        if (config.usbTabletEnabled) {
+        // USB controller (Modern xHCI USB 3.0 or legacy USB) & absolute pointer tablet
+        val hasXhci = config.usbXhciEnabled || config.usbPassthroughDevices.any { it.enabled }
+        if (hasXhci) {
+            args += listOf("-device", "qemu-xhci,id=xhci")
+            if (config.usbTabletEnabled) {
+                args += listOf("-device", "usb-tablet,bus=xhci.0")
+            }
+        } else if (config.usbTabletEnabled) {
             args += listOf("-usb", "-device", "usb-tablet")
+        }
+
+        // USB Host Passthrough Devices (via UsbManager openDevice /proc/self/fd/<fd> or vendor/product ID)
+        val enabledUsbDevices = config.usbPassthroughDevices.filter { it.enabled }
+        val usbBus = if (hasXhci) "xhci.0" else "usb.0"
+        for (device in enabledUsbDevices) {
+            val key = "${device.vendorIdHex}:${device.productIdHex}"
+            val activeFd = activeUsbDeviceFds[key] ?: activeUsbDeviceFds[device.deviceName]
+            if (activeFd != null && activeFd >= 0) {
+                args += listOf("-device", "usb-host,bus=$usbBus,hostdevice=/proc/self/fd/$activeFd")
+            } else {
+                args += listOf(
+                    "-device",
+                    "usb-host,bus=$usbBus,vendorid=0x${device.vendorIdHex},productid=0x${device.productIdHex}"
+                )
+            }
         }
 
         // Primary Disk Image

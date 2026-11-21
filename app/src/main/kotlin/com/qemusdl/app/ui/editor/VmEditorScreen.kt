@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import android.app.Activity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AddCircleOutline
@@ -30,9 +31,12 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Monitor
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Usb
+import com.qemusdl.app.usb.UsbPassthroughManager
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
@@ -105,6 +109,9 @@ fun VmEditorScreen(
         mutableStateOf(existing ?: VmConfig(name = "New x86_64 VM"))
     }
     var showCreateDiskDialog by remember { mutableStateOf(false) }
+
+    val usbPassthroughManager = remember(context) { UsbPassthroughManager(context) }
+    var connectedUsbDevices by remember { mutableStateOf(usbPassthroughManager.getConnectedDevices()) }
 
     val isoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -456,6 +463,138 @@ fun VmEditorScreen(
                                 onClick = { config = config.copy(bootOrder = order) },
                                 label = { Text(order.label) }
                             )
+                        }
+                    }
+                }
+            }
+
+            // USB Host Passthrough & Hardware
+            item {
+                EditorSectionCard(title = "USB Host Passthrough", icon = Icons.Rounded.Usb) {
+                    SwitchRow(
+                        title = "xHCI USB 3.0 Controller (-device qemu-xhci)",
+                        subtitle = "High-speed USB 2.0 / 3.0 controller for guest OS (required for USB passthrough)",
+                        checked = config.usbXhciEnabled,
+                        onCheckedChange = { config = config.copy(usbXhciEnabled = it) }
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Connected USB OTG Devices", style = MaterialTheme.typography.labelLarge)
+                            Text(
+                                "Plug in USB flash drives, mice, keyboards, or adapters via OTG to pass through",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = {
+                            connectedUsbDevices = usbPassthroughManager.getConnectedDevices()
+                        }) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = "Refresh USB devices")
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    if (connectedUsbDevices.isEmpty()) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Usb,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    "No physical USB devices currently detected. Connect a USB device via USB-C OTG and tap refresh.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            connectedUsbDevices.forEach { devInfo ->
+                                val isConfigured = config.usbPassthroughDevices.any {
+                                    it.vendorId == devInfo.vendorId && it.productId == devInfo.productId && it.enabled
+                                }
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = MaterialTheme.shapes.medium,
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = devInfo.displayTitle,
+                                                style = MaterialTheme.typography.titleSmall
+                                            )
+                                            Text(
+                                                text = "0x${devInfo.vendorIdHex}:0x${devInfo.productIdHex} • ${devInfo.deviceClassLabel}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (!devInfo.hasPermission) {
+                                                Text(
+                                                    text = "Android USB permission required",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.error
+                                                )
+                                            }
+                                        }
+
+                                        if (!devInfo.hasPermission) {
+                                            FilledTonalButton(
+                                                onClick = {
+                                                    (context as? Activity)?.let { act ->
+                                                        usbPassthroughManager.requestPermission(act, devInfo.device) { granted ->
+                                                            connectedUsbDevices = usbPassthroughManager.getConnectedDevices()
+                                                            if (granted) {
+                                                                val newDev = devInfo.toConfig(enabled = true)
+                                                                val updated = config.usbPassthroughDevices
+                                                                    .filterNot { it.vendorId == devInfo.vendorId && it.productId == devInfo.productId } + newDev
+                                                                config = config.copy(usbPassthroughDevices = updated)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            ) {
+                                                Text("Grant")
+                                            }
+                                        } else {
+                                            Switch(
+                                                checked = isConfigured,
+                                                onCheckedChange = { checked ->
+                                                    val updated = if (checked) {
+                                                        config.usbPassthroughDevices
+                                                            .filterNot { it.vendorId == devInfo.vendorId && it.productId == devInfo.productId } +
+                                                                devInfo.toConfig(enabled = true)
+                                                    } else {
+                                                        config.usbPassthroughDevices
+                                                            .filterNot { it.vendorId == devInfo.vendorId && it.productId == devInfo.productId }
+                                                    }
+                                                    config = config.copy(usbPassthroughDevices = updated)
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

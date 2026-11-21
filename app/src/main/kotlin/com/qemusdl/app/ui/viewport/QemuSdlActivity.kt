@@ -12,6 +12,9 @@ import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.RelativeLayout
+import com.qemusdl.app.usb.ActiveUsbPassthroughSession
+import com.qemusdl.app.usb.UsbPassthroughManager
+import java.io.File
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -120,16 +123,23 @@ class QemuSdlActivity : SDLActivity() {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val openDescriptors = mutableListOf<ParcelFileDescriptor>()
+    private val activeUsbSessions = mutableListOf<ActiveUsbPassthroughSession>()
     private var vmConfig: VmConfig = VmConfig(name = "QEMU x86_64")
     private var qemuFullArgs: List<String> = emptyList()
     private var firmwareDirPath: String? = null
     private var cursorUiState by mutableStateOf(VirtualCursorUiState())
 
-    override fun getLibraries(): Array<String> = arrayOf(
-        "SDL2",
-        "qemu-system-x86_64",
-        "qemusdl_bridge"
-    )
+    override fun getLibraries(): Array<String> {
+        val libs = mutableListOf<String>()
+        val hasLibusb = File(applicationInfo.nativeLibraryDir, "libusb-1.0.so").exists()
+        if (hasLibusb) {
+            libs += "usb-1.0"
+        }
+        libs += "SDL2"
+        libs += "qemu-system-x86_64"
+        libs += "qemusdl_bridge"
+        return libs.toTypedArray()
+    }
 
     override fun getMainSharedObject(): String =
         "${applicationInfo.nativeLibraryDir}/libqemu-system-x86_64.so"
@@ -150,11 +160,27 @@ class QemuSdlActivity : SDLActivity() {
         val resolvedDisk = resolveMediaPath(vmConfig.diskPathOrUri, readWrite = true)
         val resolvedIso = resolveMediaPath(vmConfig.isoPathOrUri, readWrite = false)
 
+        // Open permitted USB passthrough devices via UsbManager and extract file descriptors
+        val usbManager = UsbPassthroughManager(this)
+        val activeUsbFds = mutableMapOf<String, Int>()
+        for (devConfig in vmConfig.usbPassthroughDevices.filter { it.enabled }) {
+            val dev = usbManager.findDevice(devConfig.vendorId, devConfig.productId)
+            if (dev != null && usbManager.hasPermission(dev)) {
+                val session = usbManager.openSession(dev)
+                if (session != null) {
+                    activeUsbSessions += session
+                    activeUsbFds["${devConfig.vendorIdHex}:${devConfig.productIdHex}"] = session.fileDescriptor
+                    activeUsbFds[devConfig.deviceName] = session.fileDescriptor
+                }
+            }
+        }
+
         qemuFullArgs = QemuCommandBuilder.buildArgs(
             config = vmConfig,
             resolvedDiskPath = resolvedDisk,
             resolvedIsoPath = resolvedIso,
-            firmwareDir = firmwareDirPath
+            firmwareDir = firmwareDirPath,
+            activeUsbDeviceFds = activeUsbFds
         )
 
         // Configure SDL2 video/render/audio hints and Android upstream SLIRP DNS servers
@@ -252,6 +278,8 @@ class QemuSdlActivity : SDLActivity() {
     }
 
     override fun onDestroy() {
+        activeUsbSessions.forEach { session -> runCatching { session.close() } }
+        activeUsbSessions.clear()
         openDescriptors.forEach { pfd -> runCatching { pfd.close() } }
         openDescriptors.clear()
         super.onDestroy()

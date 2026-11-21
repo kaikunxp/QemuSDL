@@ -37,6 +37,8 @@ struct LoadedNativeRuntime {
     bool qemuLoaded = false;
     bool hasQemuInit = false;
     bool hasSdlMain = false;
+    bool hasLibusb = false;
+    bool hasLibusbWrap = false;
     std::string sdlPath;
     std::string qemuPath;
     std::string detail;
@@ -151,6 +153,17 @@ LoadedNativeRuntime probeLibrariesMetadataOnly(const std::string& nativeLibDir, 
     rt.hasQemuInit = rt.qemuLoaded;
     rt.hasSdlMain = rt.qemuLoaded;
 
+    std::vector<std::string> libusbCandidates;
+    if (!nativeLibDir.empty()) {
+        libusbCandidates.push_back(nativeLibDir + "/libusb-1.0.so");
+    }
+    if (!customLibDir.empty()) {
+        libusbCandidates.push_back(customLibDir + "/libusb-1.0.so");
+    }
+    std::string libusbPath = findElfLib(libusbCandidates);
+    rt.hasLibusb = !libusbPath.empty();
+    rt.hasLibusbWrap = rt.hasLibusb;
+
     if (rt.sdlLoaded && rt.qemuLoaded) {
         rt.detail = "Native libSDL2.so + libqemu-system-x86_64.so ready for in-process SDL2 boot.";
     } else if (rt.sdlLoaded && !rt.qemuLoaded) {
@@ -201,6 +214,8 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeProbeRuntime(
        << "\"sdl2Loaded\":" << (rt.sdlLoaded ? "true" : "false") << ","
        << "\"qemuLoaded\":" << (rt.qemuLoaded ? "true" : "false") << ","
        << "\"hasQemuEntry\":" << ((rt.hasQemuInit || rt.hasSdlMain) ? "true" : "false") << ","
+       << "\"hasLibusb\":" << (rt.hasLibusb ? "true" : "false") << ","
+       << "\"hasLibusbWrap\":" << (rt.hasLibusbWrap ? "true" : "false") << ","
        << "\"sdl2Path\":\"" << escapeJson(rt.sdlPath) << "\","
        << "\"qemuPath\":\"" << escapeJson(rt.qemuPath) << "\","
        << "\"detail\":\"" << escapeJson(rt.detail) << "\""

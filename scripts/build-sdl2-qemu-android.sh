@@ -18,6 +18,7 @@ PCRE2_VERSION="10.44"
 GLIB_VERSION="2.82.4"
 PIXMAN_VERSION="0.44.2"
 LIBSLIRP_VERSION="4.8.0"
+LIBUSB_VERSION="1.0.27"
 QEMU_VERSION="9.2.0"
 
 for arg in "$@"; do
@@ -375,16 +376,53 @@ if [[ ! -f "$PREFIX/lib/libslirp.a" ]]; then
   ninja -C "$WORK_DIR/build-slirp-$ABI" -j"$JOBS"
   ninja -C "$WORK_DIR/build-slirp-$ABI" install
 else
-  echo "[6/7] Reusing existing libslirp.a"
+  echo "[6/8] Reusing existing libslirp.a"
 fi
 
 # ------------------------------------------------------------------------------
-# 7. QEMU 9.2.0 x86_64-softmmu -> libqemu-system-x86_64.so (SDL2, no VNC)
+# 7. libusb-1.0 (with Android Linux usbfs backend and libusb_wrap_sys_device)
+# ------------------------------------------------------------------------------
+if [[ ! -f "$PREFIX/lib/libusb-1.0.so" ]]; then
+  LIBUSB_TAR="$SRC_DIR/libusb-${LIBUSB_VERSION}.tar.bz2"
+  LIBUSB_SRC="$SRC_DIR/libusb-${LIBUSB_VERSION}"
+  if [[ ! -d "$LIBUSB_SRC" ]]; then
+    echo "[7/8] Downloading libusb ${LIBUSB_VERSION}..."
+    curl -fsSL "https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2" -o "$LIBUSB_TAR"
+    tar -xjf "$LIBUSB_TAR" -C "$SRC_DIR"
+  fi
+  echo "[7/8] Building libusb ${LIBUSB_VERSION} ($ABI)..."
+  rm -rf "$WORK_DIR/build-libusb-$ABI"
+  mkdir -p "$WORK_DIR/build-libusb-$ABI"
+  pushd "$WORK_DIR/build-libusb-$ABI" >/dev/null
+  "$LIBUSB_SRC/configure" \
+    --host="$TRIPLE" \
+    --prefix="$PREFIX" \
+    --disable-udev \
+    --enable-shared \
+    --disable-static \
+    CC="$CC" \
+    CXX="$CXX" \
+    AR="$AR" \
+    RANLIB="$RANLIB" \
+    STRIP="$STRIP" \
+    CFLAGS="-O2 -fPIC -D_GNU_SOURCE"
+  make -j"$JOBS"
+  make install
+  popd >/dev/null
+  cp -f "$PREFIX/lib/libusb-1.0.so" "$JNI_OUT/libusb-1.0.so"
+  "$STRIP" --strip-unneeded "$JNI_OUT/libusb-1.0.so"
+else
+  echo "[7/8] Reusing existing libusb-1.0.so"
+  cp -f "$PREFIX/lib/libusb-1.0.so" "$JNI_OUT/libusb-1.0.so"
+fi
+
+# ------------------------------------------------------------------------------
+# 8. QEMU 9.2.0 x86_64-softmmu -> libqemu-system-x86_64.so (SDL2, no VNC)
 # ------------------------------------------------------------------------------
 QEMU_TAR="$SRC_DIR/qemu-${QEMU_VERSION}.tar.xz"
 QEMU_SRC="$SRC_DIR/qemu-${QEMU_VERSION}"
 if [[ ! -d "$QEMU_SRC" ]]; then
-  echo "[7/7] Downloading QEMU ${QEMU_VERSION}..."
+  echo "[8/8] Downloading QEMU ${QEMU_VERSION}..."
   curl -fsSL "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" -o "$QEMU_TAR"
   tar -xJf "$QEMU_TAR" -C "$SRC_DIR"
 fi
@@ -507,6 +545,7 @@ MESON="$(which meson)" \
   --disable-virglrenderer \
   --disable-dbus-display \
   --enable-slirp \
+  --enable-libusb \
   --enable-tcg \
   --with-coroutine=sigaltstack \
   --disable-kvm \
@@ -526,10 +565,10 @@ MESON="$(which meson)" \
   --disable-fdt \
   --disable-werror \
   --disable-pie \
-  --extra-cflags="-fPIC -O2 -I$PREFIX/include -I$PREFIX/include/SDL2" \
-  --extra-ldflags="-L$PREFIX/lib -lSDL2 -llog -landroid -lz"
+  --extra-cflags="-fPIC -O2 -I$PREFIX/include -I$PREFIX/include/SDL2 -I$PREFIX/include/libusb-1.0" \
+  --extra-ldflags="-L$PREFIX/lib -lSDL2 -lusb-1.0 -llog -landroid -lz"
 
-echo "[7/7] Compiling libqemu-system-x86_64.so..."
+echo "[8/8] Compiling libqemu-system-x86_64.so..."
 ninja -j"$JOBS" libqemu-system-x86_64.so
 popd >/dev/null
 
@@ -554,6 +593,7 @@ cp -Rf "$QEMU_SRC/pc-bios/keymaps" "$FIRMWARE_ASSETS_OUT/keymaps"
 echo "============================================================"
 echo " SUCCESS! Installed:"
 echo "  - $JNI_OUT/libSDL2.so"
+echo "  - $JNI_OUT/libusb-1.0.so"
 echo "  - $JNI_OUT/libqemu-system-x86_64.so"
 echo "  - $FIRMWARE_ASSETS_OUT/ (SeaBIOS + VGABIOS + keymaps)"
 echo "============================================================"
