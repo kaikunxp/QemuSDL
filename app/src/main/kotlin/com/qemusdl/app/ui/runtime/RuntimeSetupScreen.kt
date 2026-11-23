@@ -156,8 +156,18 @@ fun RuntimeSetupScreen(
                         )
                         NativeCheckRow(
                             name = "libqemu-system-x86_64.so",
-                            subtitle = status.qemuPath.ifBlank { "In-process QEMU x86_64 softmmu (-display sdl)" },
+                            subtitle = status.qemuPath.ifBlank { "In-process QEMU x86_64 softmmu (-display sdl, Venus 3D)" },
                             present = status.qemuLoaded && status.hasQemuEntry
+                        )
+                        NativeCheckRow(
+                            name = "libqemu-system-aarch64.so",
+                            subtitle = status.qemuAarch64Path.ifBlank { "In-process QEMU AArch64 softmmu (-machine virt, EDK2 UEFI, Venus 3D)" },
+                            present = status.qemuAarch64Loaded && status.hasQemuEntry
+                        )
+                        NativeCheckRow(
+                            name = "libusb-1.0.so",
+                            subtitle = if (status.hasLibusb) "Android USB OTG host passthrough ready (/proc/self/fd)" else "USB host passthrough library",
+                            present = status.hasLibusb
                         )
 
                         Spacer(Modifier.height(14.dp))

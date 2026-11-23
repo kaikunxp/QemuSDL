@@ -53,6 +53,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material3.FilterChip
+import com.qemusdl.app.data.GuestArchitecture
 import com.qemusdl.app.qemu.IsoCatalog
 import com.qemusdl.app.qemu.IsoCatalogEntry
 import com.qemusdl.app.qemu.IsoDownloadState
@@ -63,7 +67,8 @@ import java.util.Locale
 
 @OptIn(
     ExperimentalMaterial3Api::class,
-    ExperimentalMaterial3ExpressiveApi::class
+    ExperimentalMaterial3ExpressiveApi::class,
+    ExperimentalLayoutApi::class
 )
 @Composable
 fun IsoDownloaderScreen(
@@ -78,6 +83,13 @@ fun IsoDownloaderScreen(
     val scope = rememberCoroutineScope()
 
     val targetVm = remember(targetVmId) { targetVmId?.let { viewModel.getVm(it) } }
+    var selectedArchFilter by remember(targetVm?.architecture) {
+        mutableStateOf<GuestArchitecture?>(targetVm?.architecture)
+    }
+
+    val filteredCatalog = remember(selectedArchFilter) {
+        IsoCatalog.entriesForArch(selectedArchFilter)
+    }
 
     var customUrl by remember { mutableStateOf("") }
     val customState = downloadStates[IsoDownloader.CUSTOM_DOWNLOAD_ID] ?: IsoDownloadState.Idle
@@ -88,10 +100,10 @@ fun IsoDownloaderScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("x86_64 ISO Downloader")
+                        Text("OS & ISO Downloader")
                         if (targetVm != null) {
                             Text(
-                                text = "Selecting ISO for ${targetVm.name}",
+                                text = "Selecting ${targetVm.architecture.badgeText} ISO for ${targetVm.name}",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.primary
                             )
@@ -114,13 +126,32 @@ fun IsoDownloaderScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                Text(
-                    text = "Curated x86_64 OS Images",
-                    style = MaterialTheme.typography.titleLarge
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Curated x86_64 & AArch64 OS Images",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = selectedArchFilter == null,
+                            onClick = { selectedArchFilter = null },
+                            label = { Text("All Architectures") }
+                        )
+                        GuestArchitecture.entries.forEach { arch ->
+                            FilterChip(
+                                selected = selectedArchFilter == arch,
+                                onClick = { selectedArchFilter = arch },
+                                label = { Text(arch.badgeText) }
+                            )
+                        }
+                    }
+                }
             }
 
-            items(IsoCatalog.entries, key = { it.id }) { entry ->
+            items(filteredCatalog, key = { it.id }) { entry ->
                 val state = downloadStates[entry.id] ?: IsoDownloadState.Idle
                 val existingFile = downloadedIsos.firstOrNull { it.name == entry.targetFileName }
                 IsoCatalogCard(
@@ -348,16 +379,32 @@ private fun IsoCatalogCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    shape = RoundedCornerShape(100),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = entry.preset.badgeText,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        style = MaterialTheme.typography.labelMedium
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(100),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    ) {
+                        Text(
+                            text = entry.preset.badgeText,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(100),
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    ) {
+                        Text(
+                            text = entry.architecture.badgeText,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
                 }
                 Text(
                     text = downloadedSizeBytes?.let { "Saved · ${formatBytes(it)}" } ?: entry.approxSizeLabel,

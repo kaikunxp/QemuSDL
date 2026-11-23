@@ -4,26 +4,106 @@ import kotlinx.serialization.Serializable
 import java.util.UUID
 
 @Serializable
-enum class OsPreset(val displayName: String, val badgeText: String) {
-    LINUX_ALPINE("Alpine Linux", "ALPINE"),
-    LINUX_DEBIAN("Debian / Ubuntu", "LINUX"),
-    WINDOWS("Windows x64", "WIN64"),
-    FREEDOS("FreeDOS / Retro", "DOS"),
-    CUSTOM("Custom x86_64", "X86_64")
+enum class GuestArchitecture(
+    val qemuBinaryName: String,
+    val soFileName: String,
+    val soShortLibName: String,
+    val label: String,
+    val badgeText: String,
+    val defaultCpuModel: String,
+    val cpuModelOptions: List<String>
+) {
+    X86_64(
+        qemuBinaryName = "qemu-system-x86_64",
+        soFileName = "libqemu-system-x86_64.so",
+        soShortLibName = "qemu-system-x86_64",
+        label = "x86_64 (64-bit Intel / AMD)",
+        badgeText = "x86_64",
+        defaultCpuModel = "qemu64",
+        cpuModelOptions = listOf("qemu64", "max", "Haswell", "Skylake-Client", "pentium3")
+    ),
+    AARCH64(
+        qemuBinaryName = "qemu-system-aarch64",
+        soFileName = "libqemu-system-aarch64.so",
+        soShortLibName = "qemu-system-aarch64",
+        label = "AArch64 (64-bit ARMv8 / ARM64)",
+        badgeText = "AArch64",
+        defaultCpuModel = "max",
+        cpuModelOptions = listOf("max", "cortex-a72", "cortex-a76", "cortex-a57", "neoverse-n1")
+    )
 }
 
 @Serializable
-enum class MachineType(val qemuFlag: String, val label: String) {
-    Q35("q35", "Q35 (PCIe Modern)"),
-    PC("pc", "i440FX (Legacy PC)")
+enum class OsPreset(
+    val displayName: String,
+    val badgeText: String,
+    val defaultArch: GuestArchitecture = GuestArchitecture.X86_64
+) {
+    LINUX_ALPINE("Alpine Linux (x86_64)", "ALPINE", GuestArchitecture.X86_64),
+    LINUX_DEBIAN("Debian / Ubuntu (x86_64)", "LINUX", GuestArchitecture.X86_64),
+    WINDOWS("Windows x64", "WIN64", GuestArchitecture.X86_64),
+    FREEDOS("FreeDOS / Retro", "DOS", GuestArchitecture.X86_64),
+    CUSTOM("Custom x86_64", "X86_64", GuestArchitecture.X86_64),
+    LINUX_ALPINE_AARCH64("Alpine Linux (AArch64)", "ALPINE ARM64", GuestArchitecture.AARCH64),
+    LINUX_DEBIAN_AARCH64("Debian / Ubuntu (AArch64)", "DEBIAN ARM64", GuestArchitecture.AARCH64),
+    WINDOWS_AARCH64("Windows 11 ARM64", "WIN ARM64", GuestArchitecture.AARCH64),
+    CUSTOM_AARCH64("Custom AArch64", "AARCH64", GuestArchitecture.AARCH64)
 }
 
 @Serializable
-enum class DisplayDevice(val qemuArg: String, val label: String) {
-    VIRTIO_VGA("virtio-vga", "VirtIO VGA"),
-    STD("std", "Standard VGA"),
-    QXL("qxl-vga", "QXL VGA"),
-    VMWARE("vmware-svga", "VMware SVGA")
+enum class MachineType(
+    val qemuFlag: String,
+    val label: String,
+    val supportedArch: GuestArchitecture = GuestArchitecture.X86_64
+) {
+    Q35("q35", "Q35 (PCIe Modern x86_64)", GuestArchitecture.X86_64),
+    PC("pc", "i440FX (Legacy PC x86_64)", GuestArchitecture.X86_64),
+    VIRT("virt", "ARM Virt (PCIe Modern AArch64)", GuestArchitecture.AARCH64),
+    SBSA_REF("sbsa-ref", "ARM SBSA Reference Server", GuestArchitecture.AARCH64);
+
+    companion object {
+        fun forArch(arch: GuestArchitecture): List<MachineType> =
+            entries.filter { it.supportedArch == arch }
+
+        fun defaultForArch(arch: GuestArchitecture): MachineType = when (arch) {
+            GuestArchitecture.X86_64 -> Q35
+            GuestArchitecture.AARCH64 -> VIRT
+        }
+    }
+}
+
+@Serializable
+enum class DisplayDevice(
+    val qemuArg: String,
+    val label: String,
+    val supportsVenus: Boolean = false,
+    val supportsX86: Boolean = true,
+    val supportsAarch64: Boolean = true
+) {
+    VIRTIO_VGA_GL("virtio-vga-gl", "VirtIO VGA GL (Venus 3D)", supportsVenus = true, supportsX86 = true, supportsAarch64 = false),
+    VIRTIO_GPU_GL_PCI("virtio-gpu-gl-pci", "VirtIO GPU GL PCI (Venus 3D)", supportsVenus = true, supportsX86 = false, supportsAarch64 = true),
+    VIRTIO_VGA("virtio-vga", "VirtIO VGA", supportsVenus = true, supportsX86 = true, supportsAarch64 = false),
+    VIRTIO_GPU_PCI("virtio-gpu-pci", "VirtIO GPU PCI", supportsVenus = true, supportsX86 = false, supportsAarch64 = true),
+    RAMFB("ramfb", "RAMFB (UEFI Early Framebuffer)", supportsVenus = false, supportsX86 = false, supportsAarch64 = true),
+    BOCHS_DISPLAY("bochs-display", "Bochs Display PCI", supportsVenus = false, supportsX86 = true, supportsAarch64 = true),
+    STD("std", "Standard VGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false),
+    QXL("qxl-vga", "QXL VGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false),
+    VMWARE("vmware-svga", "VMware SVGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false);
+
+    fun isSupportedOn(arch: GuestArchitecture): Boolean = when (arch) {
+        GuestArchitecture.X86_64 -> supportsX86
+        GuestArchitecture.AARCH64 -> supportsAarch64
+    }
+
+    companion object {
+        fun forArch(arch: GuestArchitecture): List<DisplayDevice> =
+            entries.filter { it.isSupportedOn(arch) }
+
+        fun defaultForArch(arch: GuestArchitecture): DisplayDevice = when (arch) {
+            GuestArchitecture.X86_64 -> VIRTIO_VGA
+            GuestArchitecture.AARCH64 -> VIRTIO_GPU_PCI
+        }
+    }
 }
 
 @Serializable
@@ -98,7 +178,7 @@ enum class NetworkAdapterModel(
     E1000E(
         qemuModel = "e1000e",
         label = "Intel e1000e (PCIe)",
-        description = "Modern Intel 82574L PCIe Gigabit adapter for Q35 machines"
+        description = "Modern Intel 82574L PCIe Gigabit adapter for Q35 / ARM Virt PCIe machines"
     )
 }
 
@@ -106,6 +186,7 @@ enum class NetworkAdapterModel(
 data class VmConfig(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Alpine Linux x86_64",
+    val architecture: GuestArchitecture = GuestArchitecture.X86_64,
     val osPreset: OsPreset = OsPreset.LINUX_ALPINE,
     val cpuModel: String = "qemu64",
     val cpuCores: Int = 2,
@@ -114,6 +195,8 @@ data class VmConfig(
     val displayDevice: DisplayDevice = DisplayDevice.VIRTIO_VGA,
     val resolution: DisplayResolution = DisplayResolution.HD_1280x720,
     val sdlGlAcceleration: Boolean = true,
+    val venus3dEnabled: Boolean = false,
+    val venusHostMemoryMb: Int = 2048,
     val scalingMode: SdlScalingMode = SdlScalingMode.FIT_ASPECT,
     val mouseEmulationMode: MouseEmulationMode = MouseEmulationMode.TRACKPAD_RELATIVE,
     val bootOrder: BootOrder = BootOrder.CDROM_FIRST,

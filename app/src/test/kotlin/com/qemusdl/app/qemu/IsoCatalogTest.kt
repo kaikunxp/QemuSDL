@@ -37,5 +37,29 @@ class IsoCatalogTest {
         assertEquals("alpine-virt-x86_64", IsoCatalog.recommendedForPreset(OsPreset.LINUX_ALPINE).id)
         assertEquals("debian-netinst-amd64", IsoCatalog.recommendedForPreset(OsPreset.LINUX_DEBIAN).id)
         assertEquals("freedos-13-livecd", IsoCatalog.recommendedForPreset(OsPreset.FREEDOS).id)
+        assertEquals("alpine-virt-aarch64", IsoCatalog.recommendedForPreset(OsPreset.LINUX_ALPINE_AARCH64).id)
+        assertEquals("debian-netinst-arm64", IsoCatalog.recommendedForPreset(OsPreset.LINUX_DEBIAN_AARCH64).id)
+    }
+
+    @Test
+    fun aarch64AlpineAndDebianRegexMatchesOfficialManifests() {
+        val alpineArm = IsoCatalog.findById("alpine-virt-aarch64")
+        assertNotNull(alpineArm)
+        val sampleAlpineYaml = """
+            - arch: aarch64
+              flavor: alpine-virt
+              iso: alpine-virt-3.21.3-aarch64.iso
+              file: alpine-virt-3.21.3-aarch64.iso
+        """.trimIndent()
+        val alpineMatch = Regex(alpineArm!!.regexPattern!!).find(sampleAlpineYaml)
+        assertNotNull(alpineMatch)
+        assertEquals("alpine-virt-3.21.3-aarch64.iso", alpineMatch!!.groupValues[1])
+
+        val debianArm = IsoCatalog.findById("debian-netinst-arm64")
+        assertNotNull(debianArm)
+        val sampleDebianSums = "f0e1d2c3b4a5  debian-12.10.0-arm64-netinst.iso\n"
+        val debianMatch = Regex(debianArm!!.regexPattern!!).find(sampleDebianSums)
+        assertNotNull(debianMatch)
+        assertEquals("debian-12.10.0-arm64-netinst.iso", debianMatch!!.groupValues[1])
     }
 }

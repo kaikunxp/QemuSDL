@@ -2,6 +2,7 @@ package com.qemusdl.app.qemu
 
 import android.content.Context
 import com.qemusdl.app.data.DownloadedIsoInfo
+import com.qemusdl.app.data.GuestArchitecture
 import com.qemusdl.app.data.OsPreset
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +29,7 @@ data class IsoCatalogEntry(
     val subtitle: String,
     val approxSizeLabel: String,
     val preset: OsPreset,
+    val architecture: GuestArchitecture = preset.defaultArch,
     val targetFileName: String,
     val resolveStrategy: IsoResolveStrategy,
     val primaryUrl: String,
@@ -54,12 +56,14 @@ sealed interface IsoDownloadState {
 
 object IsoCatalog {
     val entries: List<IsoCatalogEntry> = listOf(
+        // x86_64 Images
         IsoCatalogEntry(
             id = "alpine-virt-x86_64",
             title = "Alpine Linux Virtual (x86_64)",
-            subtitle = "Ultra-lightweight Linux tailored for VMs — boots fast on QEMU TCG",
+            subtitle = "Ultra-lightweight x86_64 Linux tailored for VMs — boots fast on QEMU TCG",
             approxSizeLabel = "~65 MB",
             preset = OsPreset.LINUX_ALPINE,
+            architecture = GuestArchitecture.X86_64,
             targetFileName = "alpine-virt-latest-x86_64.iso",
             resolveStrategy = IsoResolveStrategy.ALPINE_LATEST_YAML,
             primaryUrl = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/latest-releases.yaml",
@@ -72,6 +76,7 @@ object IsoCatalog {
             subtitle = "Full standard Alpine x86_64 live & installer ISO with extra packages",
             approxSizeLabel = "~210 MB",
             preset = OsPreset.LINUX_ALPINE,
+            architecture = GuestArchitecture.X86_64,
             targetFileName = "alpine-standard-latest-x86_64.iso",
             resolveStrategy = IsoResolveStrategy.ALPINE_LATEST_YAML,
             primaryUrl = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/latest-releases.yaml",
@@ -84,6 +89,7 @@ object IsoCatalog {
             subtitle = "Minimal 64-bit Linux ISO with rapid boot — great for instant testing",
             approxSizeLabel = "~25 MB",
             preset = OsPreset.CUSTOM,
+            architecture = GuestArchitecture.X86_64,
             targetFileName = "CorePure64-current.iso",
             resolveStrategy = IsoResolveStrategy.DIRECT_URL,
             primaryUrl = "https://distro.ibiblio.org/tinycorelinux/15.x/x86_64/release/CorePure64-current.iso"
@@ -94,6 +100,7 @@ object IsoCatalog {
             subtitle = "Official Debian x86_64 network installer with desktop environment options",
             approxSizeLabel = "~750 MB",
             preset = OsPreset.LINUX_DEBIAN,
+            architecture = GuestArchitecture.X86_64,
             targetFileName = "debian-stable-amd64-netinst.iso",
             resolveStrategy = IsoResolveStrategy.DEBIAN_CURRENT_NETINST,
             primaryUrl = "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/SHA256SUMS",
@@ -106,20 +113,70 @@ object IsoCatalog {
             subtitle = "Classic DOS operating system — boots immediately on legacy PC / VGA",
             approxSizeLabel = "~400 MB",
             preset = OsPreset.FREEDOS,
+            architecture = GuestArchitecture.X86_64,
             targetFileName = "FD13LIVE.iso",
             resolveStrategy = IsoResolveStrategy.DIRECT_URL,
             primaryUrl = "https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.3/official/FD13-LiveCD.zip",
             extractIsoFromZip = true
+        ),
+        // AArch64 (ARM64) Images
+        IsoCatalogEntry(
+            id = "alpine-virt-aarch64",
+            title = "Alpine Linux Virtual (AArch64)",
+            subtitle = "Ultra-lightweight ARM64 Linux tailored for QEMU ARM virt + EDK2 UEFI",
+            approxSizeLabel = "~60 MB",
+            preset = OsPreset.LINUX_ALPINE_AARCH64,
+            architecture = GuestArchitecture.AARCH64,
+            targetFileName = "alpine-virt-latest-aarch64.iso",
+            resolveStrategy = IsoResolveStrategy.ALPINE_LATEST_YAML,
+            primaryUrl = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/latest-releases.yaml",
+            regexPattern = """file:\s*(alpine-virt-[0-9A-Za-z._-]+-aarch64\.iso)""",
+            baseDownloadUrl = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/"
+        ),
+        IsoCatalogEntry(
+            id = "alpine-standard-aarch64",
+            title = "Alpine Linux Standard (AArch64)",
+            subtitle = "Full standard Alpine ARM64 live & installer ISO with extra packages",
+            approxSizeLabel = "~230 MB",
+            preset = OsPreset.LINUX_ALPINE_AARCH64,
+            architecture = GuestArchitecture.AARCH64,
+            targetFileName = "alpine-standard-latest-aarch64.iso",
+            resolveStrategy = IsoResolveStrategy.ALPINE_LATEST_YAML,
+            primaryUrl = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/latest-releases.yaml",
+            regexPattern = """file:\s*(alpine-standard-[0-9A-Za-z._-]+-aarch64\.iso)""",
+            baseDownloadUrl = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/"
+        ),
+        IsoCatalogEntry(
+            id = "debian-netinst-arm64",
+            title = "Debian Stable Netinst (arm64)",
+            subtitle = "Official Debian AArch64 UEFI network installer with desktop options",
+            approxSizeLabel = "~720 MB",
+            preset = OsPreset.LINUX_DEBIAN_AARCH64,
+            architecture = GuestArchitecture.AARCH64,
+            targetFileName = "debian-stable-arm64-netinst.iso",
+            resolveStrategy = IsoResolveStrategy.DEBIAN_CURRENT_NETINST,
+            primaryUrl = "https://cdimage.debian.org/debian-cd/current/arm64/iso-cd/SHA256SUMS",
+            regexPattern = """(debian-[0-9.]+-arm64-netinst\.iso)""",
+            baseDownloadUrl = "https://cdimage.debian.org/debian-cd/current/arm64/iso-cd/"
         )
     )
 
     fun findById(id: String?): IsoCatalogEntry? = entries.firstOrNull { it.id == id }
 
-    fun recommendedForPreset(preset: OsPreset): IsoCatalogEntry = when (preset) {
-        OsPreset.LINUX_ALPINE -> entries[0]
-        OsPreset.LINUX_DEBIAN -> entries[3]
-        OsPreset.FREEDOS -> entries[4]
-        else -> entries[0]
+    fun entriesForArch(arch: GuestArchitecture?): List<IsoCatalogEntry> =
+        if (arch == null) entries else entries.filter { it.architecture == arch }
+
+    fun recommendedForPreset(preset: OsPreset, arch: GuestArchitecture = preset.defaultArch): IsoCatalogEntry = when (preset) {
+        OsPreset.LINUX_ALPINE -> findById("alpine-virt-x86_64") ?: entries.first()
+        OsPreset.LINUX_DEBIAN -> findById("debian-netinst-amd64") ?: entries.first()
+        OsPreset.FREEDOS -> findById("freedos-13-livecd") ?: entries.first()
+        OsPreset.LINUX_ALPINE_AARCH64 -> findById("alpine-virt-aarch64") ?: entries.first()
+        OsPreset.LINUX_DEBIAN_AARCH64 -> findById("debian-netinst-arm64") ?: entries.first()
+        else -> if (arch == GuestArchitecture.AARCH64) {
+            findById("alpine-virt-aarch64") ?: entries.first()
+        } else {
+            findById("alpine-virt-x86_64") ?: entries.first()
+        }
     }
 }
 
@@ -225,7 +282,7 @@ class IsoDownloader(context: Context) {
         val manifestText = fetchText(entry.primaryUrl)
         val pattern = Regex(requireNotNull(entry.regexPattern))
         val match = pattern.find(manifestText)
-            ?: error("Could not locate latest x86_64 ISO in mirror manifest.")
+            ?: error("Could not locate latest ${entry.architecture.badgeText} ISO in mirror manifest.")
         val fileName = match.groupValues[1]
         val base = requireNotNull(entry.baseDownloadUrl)
         return "$base$fileName"

@@ -458,7 +458,7 @@ public class SDLActivity extends ComponentActivity implements View.OnSystemUiVis
         SDLActivity.handleNativeState();
     }
 
-    // Events
+        // Events
     @Override
     protected void onPause() {
         Log.v(TAG, "onPause()");
@@ -467,7 +467,9 @@ public class SDLActivity extends ComponentActivity implements View.OnSystemUiVis
         if (mHIDDeviceManager != null) {
             mHIDDeviceManager.setFrozen(true);
         }
-        if (!mHasMultiWindow) {
+        // Only pause the SDL native thread when the activity is actually stopping or finishing,
+        // not during brief transparent permission dialogs or orientation transitions while visible.
+        if (!mHasMultiWindow && isFinishing()) {
             pauseNativeThread();
         }
     }
@@ -480,27 +482,21 @@ public class SDLActivity extends ComponentActivity implements View.OnSystemUiVis
         if (mHIDDeviceManager != null) {
             mHIDDeviceManager.setFrozen(false);
         }
-        if (!mHasMultiWindow) {
-            resumeNativeThread();
-        }
+        resumeNativeThread();
     }
 
     @Override
     protected void onStop() {
         Log.v(TAG, "onStop()");
         super.onStop();
-        if (mHasMultiWindow) {
-            pauseNativeThread();
-        }
+        pauseNativeThread();
     }
 
     @Override
     protected void onStart() {
         Log.v(TAG, "onStart()");
         super.onStart();
-        if (mHasMultiWindow) {
-            resumeNativeThread();
-        }
+        resumeNativeThread();
     }
 
     public static int getCurrentOrientation() {
@@ -552,10 +548,10 @@ public class SDLActivity extends ComponentActivity implements View.OnSystemUiVis
 
         } else {
            nativeFocusChanged(false);
-           if (!mHasMultiWindow) {
-               mNextNativeState = NativeState.PAUSED;
-               SDLActivity.handleNativeState();
-           }
+           // Do not transition to PAUSED on transient window focus loss (e.g. ModalBottomSheet,
+           // DropdownMenu, IME, or orientation transition), because nativePause() causes SDL's
+           // Android event pump to unbind the EGLContext (SDL_GL_MakeCurrent(window, NULL)) while
+           // QEMU's SDLThread is still executing OpenGL ES / Venus virglrenderer commands.
         }
     }
 

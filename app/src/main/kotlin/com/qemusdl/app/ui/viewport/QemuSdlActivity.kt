@@ -130,33 +130,58 @@ class QemuSdlActivity : SDLActivity() {
     private var cursorUiState by mutableStateOf(VirtualCursorUiState())
 
     override fun getLibraries(): Array<String> {
+        // Parse architecture early if getLibraries() is invoked during super.onCreate()
+        val targetArch = resolveTargetConfig().architecture
         val libs = mutableListOf<String>()
         val hasLibusb = File(applicationInfo.nativeLibraryDir, "libusb-1.0.so").exists()
         if (hasLibusb) {
             libs += "usb-1.0"
         }
+        val hasEpoxy = File(applicationInfo.nativeLibraryDir, "libepoxy.so").exists()
+        if (hasEpoxy) {
+            libs += "epoxy"
+        }
+        val hasVirgl = File(applicationInfo.nativeLibraryDir, "libvirglrenderer.so").exists()
+        if (hasVirgl) {
+            libs += "virglrenderer"
+        }
         libs += "SDL2"
-        libs += "qemu-system-x86_64"
+        // Dynamically load only the selected architecture's QEMU shared object so x86_64 and aarch64 symbols never collide
+        libs += targetArch.soShortLibName
         libs += "qemusdl_bridge"
         return libs.toTypedArray()
     }
 
-    override fun getMainSharedObject(): String =
-        "${applicationInfo.nativeLibraryDir}/libqemu-system-x86_64.so"
+    override fun getMainSharedObject(): String {
+        val targetArch = resolveTargetConfig().architecture
+        return "${applicationInfo.nativeLibraryDir}/${targetArch.soFileName}"
+    }
 
     override fun getMainFunction(): String = "SDL_main"
 
     override fun getArguments(): Array<String> =
         qemuFullArgs.drop(1).toTypedArray()
 
+    private fun resolveTargetConfig(): VmConfig {
+        intent?.getStringExtra(EXTRA_VM_CONFIG_JSON)?.let { raw ->
+            runCatching { json.decodeFromString<VmConfig>(raw) }.getOrNull()?.let { parsed ->
+                return parsed
+            }
+        }
+        return vmConfig
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Parse VM configuration and prepare firmware + SAF file descriptors BEFORE super.onCreate()
         // because SDLActivity starts loading libraries and preparing SDLMain during onCreate.
-        vmConfig = intent.getStringExtra(EXTRA_VM_CONFIG_JSON)?.let { raw ->
-            runCatching { json.decodeFromString<VmConfig>(raw) }.getOrNull()
-        } ?: VmConfig(name = "QEMU x86_64")
+        vmConfig = resolveTargetConfig()
 
         firmwareDirPath = QemuFirmwareManager.ensureFirmwareExtracted(this)?.absolutePath
+        val pflashFiles = if (vmConfig.architecture == com.qemusdl.app.data.GuestArchitecture.AARCH64) {
+            QemuFirmwareManager.prepareAarch64PflashFiles(this, vmConfig.id)
+        } else {
+            null
+        }
         val resolvedDisk = resolveMediaPath(vmConfig.diskPathOrUri, readWrite = true)
         val resolvedIso = resolveMediaPath(vmConfig.isoPathOrUri, readWrite = false)
 
@@ -180,6 +205,8 @@ class QemuSdlActivity : SDLActivity() {
             resolvedDiskPath = resolvedDisk,
             resolvedIsoPath = resolvedIso,
             firmwareDir = firmwareDirPath,
+            edk2CodePath = pflashFiles?.first?.absolutePath,
+            edk2VarsPath = pflashFiles?.second?.absolutePath,
             activeUsbDeviceFds = activeUsbFds
         )
 
@@ -191,6 +218,8 @@ class QemuSdlActivity : SDLActivity() {
             Os.setenv("SDL_AUDIODRIVER", "openslES", true)
             Os.setenv("SDL_HINT_ANDROID_TRAP_BACK_BUTTON", "1", true)
             Os.setenv("SDL_HINT_TOUCH_MOUSE_EVENTS", "0", true)
+            // Keep the QEMU emulation & EGL context alive across brief Android window focus changes
+            Os.setenv("SDL_ANDROID_BLOCK_ON_PAUSE", "0", true)
             Os.setenv("QEMU_SLIRP_DNS", activeDnsCsv, true)
         }
 

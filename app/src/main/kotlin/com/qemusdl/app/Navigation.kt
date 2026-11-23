@@ -35,9 +35,15 @@ fun MainNavigation(
         context.startActivity(intent)
     }
 
+    fun popBackSafely() {
+        if (backStack.size > 1) {
+            backStack.removeLastOrNull()
+        }
+    }
+
     NavDisplay(
         backStack = backStack,
-        onBack = { backStack.removeLastOrNull() },
+        onBack = { popBackSafely() },
         entryProvider = entryProvider {
             entry<VmLibraryKey> {
                 VmLibraryScreen(
@@ -55,10 +61,10 @@ fun MainNavigation(
                 VmSetupScreen(
                     vmId = key.vmId,
                     viewModel = viewModel,
-                    onBack = { backStack.removeLastOrNull() },
+                    onBack = { popBackSafely() },
                     onOpenIsoCatalog = { backStack.add(IsoDownloaderKey(targetVmId = key.vmId)) },
                     onCompletedAndBoot = { configuredVm ->
-                        backStack.removeLastOrNull()
+                        popBackSafely()
                         launchVm(configuredVm)
                     }
                 )
@@ -68,9 +74,9 @@ fun MainNavigation(
                 IsoDownloaderScreen(
                     viewModel = viewModel,
                     targetVmId = key.targetVmId,
-                    onBack = { backStack.removeLastOrNull() },
+                    onBack = { popBackSafely() },
                     onIsoSelectedForVm = { _, _ ->
-                        backStack.removeLastOrNull()
+                        popBackSafely()
                     }
                 )
             }
@@ -79,12 +85,12 @@ fun MainNavigation(
                 VmEditorScreen(
                     vmId = key.vmId,
                     viewModel = viewModel,
-                    onBack = { backStack.removeLastOrNull() },
+                    onBack = { popBackSafely() },
                     onOpenIsoDownloader = { targetId ->
                         backStack.add(IsoDownloaderKey(targetVmId = targetId))
                     },
                     onSavedAndBoot = { saved ->
-                        backStack.removeLastOrNull()
+                        popBackSafely()
                         launchVm(saved)
                     }
                 )
@@ -93,7 +99,7 @@ fun MainNavigation(
             entry<RuntimeSetupKey> {
                 RuntimeSetupScreen(
                     viewModel = viewModel,
-                    onBack = { backStack.removeLastOrNull() }
+                    onBack = { popBackSafely() }
                 )
             }
         }

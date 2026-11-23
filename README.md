@@ -94,6 +94,43 @@ flowchart TD
 
 ---
 
+## Hardware 3D GPU Acceleration: Venus Vulkan Protocol
+
+Traditional virtual machine acceleration relies on desktop OpenGL translation (`virgl`), which struggles on mobile because Android does not provide desktop `libGL.so`. **QemuSDL** implements the **Venus Vulkan protocol** (`virglrenderer` v1.0+ with `venus=true`):
+
+```mermaid
+flowchart TD
+    subgraph GuestOS["Linux Guest OS (Debian 12+, Alpine, Ubuntu)"]
+        GuestApp["Vulkan Game / 3D App / DXVK / Zink"]
+        MesaVenus["Mesa Venus Vulkan Driver (VK_DRIVER=virtio)"]
+        VirtIoDri["virtio_gpu kernel driver (/dev/dri/renderD128)"]
+    end
+
+    subgraph QemuProcess["QEMU In-Process Engine (:qemu_vm)"]
+        QemuVirtio["hw/display/virtio-gpu-gl.c\n(-device virtio-vga-gl,hostmem=4G,blob=true,venus=true)"]
+        VirglServer["virglrenderer Render Server (threaded worker)"]
+    end
+
+    subgraph AndroidGPU["Android Host GPU"]
+        HostVulkan["libvulkan.so (Qualcomm Adreno / ARM Mali GPU)"]
+        HostEgl["libEGL.so + libGLESv3.so (SDL2 OpenGLES Viewport)"]
+    end
+
+    GuestApp --> MesaVenus
+    MesaVenus --> VirtIoDri
+    VirtIoDri -->|VirtIO Shared Host Memory (blob)| QemuVirtio
+    QemuVirtio --> VirglServer
+    VirglServer --> HostVulkan
+    VirglServer --> HostEgl
+```
+
+- **Zero OpenGL Emulation Overhead**: Vulkan API commands from the guest pass directly through to Android's native `libvulkan.so` (Adreno / Mali driver).
+- **Direct3D & Windows Games via DXVK**: Direct3D 9/10/11 games run inside the guest translated to Vulkan by DXVK, which Venus executes natively on the host GPU.
+- **Configurable Host Memory Window**: Adjust host blob memory (`hostmem=1G` to `hostmem=8G`) directly from the VM Editor.
+- **How to verify in guest**: Run `vulkaninfo` or `vkcube` inside Debian/Ubuntu/Alpine; the device name will report the Android device's real hardware GPU.
+
+---
+
 ## Architecture & Pipeline
 
 ```mermaid

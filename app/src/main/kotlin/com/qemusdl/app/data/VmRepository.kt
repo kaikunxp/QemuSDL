@@ -141,6 +141,8 @@ class VmRepository(private val appContext: Context) {
                             OsPreset.LINUX_ALPINE -> "alpine-virt-x86_64"
                             OsPreset.LINUX_DEBIAN -> "debian-netinst-amd64"
                             OsPreset.FREEDOS -> "freedos-13-livecd"
+                            OsPreset.LINUX_ALPINE_AARCH64 -> "alpine-virt-aarch64"
+                            OsPreset.LINUX_DEBIAN_AARCH64 -> "debian-netinst-arm64"
                             else -> "alpine-virt-x86_64"
                         }
                         vm.copy(isSetupComplete = false, recommendedIsoId = recIso)
@@ -148,13 +150,20 @@ class VmRepository(private val appContext: Context) {
                         vm
                     }
                 }
-                if (mutated) {
-                    runCatching { configFile.writeText(json.encodeToString(migrated)) }
+                val hasAarch64Preset = migrated.any { it.architecture == GuestArchitecture.AARCH64 }
+                val finalVms = if (!hasAarch64Preset) {
+                    mutated = true
+                    migrated + defaultAarch64StarterVms()
+                } else {
+                    migrated
                 }
-                return migrated
+                if (mutated) {
+                    runCatching { configFile.writeText(json.encodeToString(finalVms)) }
+                }
+                return finalVms
             }
         }
-        val defaults = defaultStarterVms()
+        val defaults = defaultStarterVms() + defaultAarch64StarterVms()
         runCatching { configFile.writeText(json.encodeToString(defaults)) }
         return defaults
     }
@@ -163,6 +172,7 @@ class VmRepository(private val appContext: Context) {
         VmConfig(
             id = "preset-alpine-x86_64",
             name = "Alpine Linux x86_64",
+            architecture = GuestArchitecture.X86_64,
             osPreset = OsPreset.LINUX_ALPINE,
             cpuModel = "qemu64",
             cpuCores = 2,
@@ -180,7 +190,8 @@ class VmRepository(private val appContext: Context) {
         ),
         VmConfig(
             id = "preset-debian-x86_64",
-            name = "Debian 12 Desktop",
+            name = "Debian 12 Desktop (x86_64)",
+            architecture = GuestArchitecture.X86_64,
             osPreset = OsPreset.LINUX_DEBIAN,
             cpuModel = "max",
             cpuCores = 4,
@@ -199,6 +210,7 @@ class VmRepository(private val appContext: Context) {
         VmConfig(
             id = "preset-freedos-retro",
             name = "FreeDOS 1.3 Retro",
+            architecture = GuestArchitecture.X86_64,
             osPreset = OsPreset.FREEDOS,
             cpuModel = "pentium3",
             cpuCores = 1,
@@ -214,6 +226,49 @@ class VmRepository(private val appContext: Context) {
             usbTabletEnabled = false,
             isSetupComplete = false,
             recommendedIsoId = "freedos-13-livecd"
+        )
+    )
+
+    private fun defaultAarch64StarterVms(): List<VmConfig> = listOf(
+        VmConfig(
+            id = "preset-alpine-aarch64",
+            name = "Alpine Linux AArch64",
+            architecture = GuestArchitecture.AARCH64,
+            osPreset = OsPreset.LINUX_ALPINE_AARCH64,
+            cpuModel = "max",
+            cpuCores = 4,
+            memoryMb = 1024,
+            machineType = MachineType.VIRT,
+            displayDevice = DisplayDevice.VIRTIO_GPU_PCI,
+            resolution = DisplayResolution.HD_1280x720,
+            sdlGlAcceleration = true,
+            bootOrder = BootOrder.CDROM_FIRST,
+            networkEnabled = true,
+            audioEnabled = true,
+            usbXhciEnabled = true,
+            usbTabletEnabled = true,
+            isSetupComplete = false,
+            recommendedIsoId = "alpine-virt-aarch64"
+        ),
+        VmConfig(
+            id = "preset-debian-aarch64",
+            name = "Debian 12 ARM64 (AArch64)",
+            architecture = GuestArchitecture.AARCH64,
+            osPreset = OsPreset.LINUX_DEBIAN_AARCH64,
+            cpuModel = "max",
+            cpuCores = 4,
+            memoryMb = 2048,
+            machineType = MachineType.VIRT,
+            displayDevice = DisplayDevice.VIRTIO_GPU_PCI,
+            resolution = DisplayResolution.HD_1280x720,
+            sdlGlAcceleration = true,
+            bootOrder = BootOrder.CDROM_FIRST,
+            networkEnabled = true,
+            audioEnabled = true,
+            usbXhciEnabled = true,
+            usbTabletEnabled = true,
+            isSetupComplete = false,
+            recommendedIsoId = "debian-netinst-arm64"
         )
     )
 

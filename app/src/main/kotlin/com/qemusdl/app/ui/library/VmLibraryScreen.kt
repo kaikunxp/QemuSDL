@@ -87,6 +87,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.qemusdl.app.data.GuestArchitecture
 import com.qemusdl.app.data.OsPreset
 import com.qemusdl.app.data.VmConfig
 import com.qemusdl.app.qemu.QemuCommandBuilder
@@ -133,7 +137,7 @@ fun VmLibraryScreen(
                             style = MaterialTheme.typography.headlineMedium
                         )
                         Text(
-                            text = "x86_64 Virtualization · Native SDL2 Viewport",
+                            text = "x86_64 & AArch64 Virtualization · Native SDL2 Viewport",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -143,7 +147,7 @@ fun VmLibraryScreen(
                     FilledTonalIconButton(onClick = onOpenIsoDownloader) {
                         Icon(
                             imageVector = Icons.Rounded.CloudDownload,
-                            contentDescription = "Download x86_64 ISOs"
+                            contentDescription = "Download ISOs"
                         )
                     }
                     Spacer(Modifier.width(6.dp))
@@ -199,7 +203,7 @@ fun VmLibraryScreen(
                             style = MaterialTheme.typography.titleLarge
                         )
                         Text(
-                            text = "Zero-VNC · Direct GLES3",
+                            text = "Zero-VNC · Venus Vulkan 3D",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -243,7 +247,7 @@ fun VmLibraryScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Add,
-                            contentDescription = "New x86_64 VM"
+                            contentDescription = "New VM"
                         )
                     }
                 },
@@ -313,9 +317,9 @@ fun VmLibraryScreen(
                 FilledTonalButton(
                     onClick = {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("qemu-x86_64", cli))
+                        cm.setPrimaryClip(ClipData.newPlainText("qemu-cli", cli))
                         cliPreviewVm = null
-                        scope.launch { snackbarHostState.showSnackbar("Copied qemu-system-x86_64 command") }
+                        scope.launch { snackbarHostState.showSnackbar("Copied ${vm.architecture.qemuBinaryName} command") }
                     }
                 ) {
                     Text("Copy")
@@ -339,6 +343,8 @@ private fun RuntimeHeroCard(
     onOpenSetup: () -> Unit,
     onRefresh: () -> Unit
 ) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
     val containerColor = if (status.isFullQemuReady) {
         MaterialTheme.colorScheme.secondaryContainer
     } else {
@@ -350,28 +356,41 @@ private fun RuntimeHeroCard(
         MaterialTheme.colorScheme.onPrimaryContainer
     }
 
+    val titleText = when {
+        status.isBothArchsReady -> "SDL2 + QEMU (x86_64 & AArch64) Ready"
+        status.isFullQemuReady && status.qemuLoaded -> "SDL2 + QEMU x86_64 Ready"
+        status.isFullQemuReady && status.qemuAarch64Loaded -> "SDL2 + QEMU AArch64 Ready"
+        else -> "SDL2 GLES3 Viewport Active"
+    }
+
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.large)
+            .clickable { expanded = !expanded },
         shape = MaterialTheme.shapes.large,
         color = containerColor,
         contentColor = onContainer
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Box(
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(38.dp)
                             .clip(CircleShape)
                             .background(onContainer.copy(alpha = 0.14f)),
                         contentAlignment = Alignment.Center
                     ) {
                         if (isProbing) {
-                            LoadingIndicator(modifier = Modifier.size(28.dp))
+                            LoadingIndicator(modifier = Modifier.size(24.dp))
                         } else {
                             Icon(
                                 imageVector = if (status.isFullQemuReady) {
@@ -383,14 +402,10 @@ private fun RuntimeHeroCard(
                             )
                         }
                     }
-                    Spacer(Modifier.width(14.dp))
+                    Spacer(Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = if (status.isFullQemuReady) {
-                                "SDL2 + QEMU x86_64 Ready"
-                            } else {
-                                "SDL2 GLES3 Viewport Active"
-                            },
+                            text = titleText,
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
@@ -400,28 +415,42 @@ private fun RuntimeHeroCard(
                         )
                     }
                 }
-                IconButton(onClick = onRefresh) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = "Refresh status")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onRefresh) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "Refresh status")
+                    }
+                    IconButton(onClick = { expanded = !expanded }) {
+                        Icon(
+                            imageVector = if (expanded) {
+                                Icons.Rounded.KeyboardArrowUp
+                            } else {
+                                Icons.Rounded.KeyboardArrowDown
+                            },
+                            contentDescription = if (expanded) "Collapse runtime details" else "Expand runtime details"
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = status.detail,
-                style = MaterialTheme.typography.bodyMedium,
-                color = onContainer.copy(alpha = 0.9f)
-            )
-            Spacer(Modifier.height(14.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FilledTonalButton(onClick = onOpenSetup) {
-                    Icon(
-                        imageVector = Icons.Rounded.SettingsApplications,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+            AnimatedVisibility(visible = expanded) {
+                Column(modifier = Modifier.padding(top = 10.dp)) {
+                    Text(
+                        text = status.detail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = onContainer.copy(alpha = 0.9f)
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Runtime & Disks")
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FilledTonalButton(onClick = onOpenSetup) {
+                            Icon(
+                                imageVector = Icons.Rounded.SettingsApplications,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Runtime & Disks")
+                        }
+                    }
                 }
             }
         }
@@ -446,16 +475,16 @@ private fun ExpressiveVmCard(
     var menuExpanded by remember { mutableStateOf(false) }
 
     val badgeContainer = when (vm.osPreset) {
-        OsPreset.LINUX_ALPINE -> MaterialTheme.colorScheme.secondaryContainer
-        OsPreset.LINUX_DEBIAN -> MaterialTheme.colorScheme.primaryContainer
-        OsPreset.WINDOWS -> MaterialTheme.colorScheme.tertiaryContainer
+        OsPreset.LINUX_ALPINE, OsPreset.LINUX_ALPINE_AARCH64 -> MaterialTheme.colorScheme.secondaryContainer
+        OsPreset.LINUX_DEBIAN, OsPreset.LINUX_DEBIAN_AARCH64 -> MaterialTheme.colorScheme.primaryContainer
+        OsPreset.WINDOWS, OsPreset.WINDOWS_AARCH64 -> MaterialTheme.colorScheme.tertiaryContainer
         OsPreset.FREEDOS -> MaterialTheme.colorScheme.surfaceContainerHighest
-        OsPreset.CUSTOM -> MaterialTheme.colorScheme.surfaceContainerHigh
+        OsPreset.CUSTOM, OsPreset.CUSTOM_AARCH64 -> MaterialTheme.colorScheme.surfaceContainerHigh
     }
     val badgeContent = when (vm.osPreset) {
-        OsPreset.LINUX_ALPINE -> MaterialTheme.colorScheme.onSecondaryContainer
-        OsPreset.LINUX_DEBIAN -> MaterialTheme.colorScheme.onPrimaryContainer
-        OsPreset.WINDOWS -> MaterialTheme.colorScheme.onTertiaryContainer
+        OsPreset.LINUX_ALPINE, OsPreset.LINUX_ALPINE_AARCH64 -> MaterialTheme.colorScheme.onSecondaryContainer
+        OsPreset.LINUX_DEBIAN, OsPreset.LINUX_DEBIAN_AARCH64 -> MaterialTheme.colorScheme.onPrimaryContainer
+        OsPreset.WINDOWS, OsPreset.WINDOWS_AARCH64 -> MaterialTheme.colorScheme.onTertiaryContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
@@ -504,7 +533,7 @@ private fun ExpressiveVmCard(
                 }
 
                 Text(
-                    text = "${vm.machineType.qemuFlag.uppercase()} · ${vm.resolution.label}",
+                    text = "${vm.architecture.badgeText} · ${vm.machineType.qemuFlag.uppercase()} · ${vm.resolution.label}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
