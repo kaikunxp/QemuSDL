@@ -116,4 +116,92 @@ class QemuCommandBuilderTest {
         assertTrue(args.contains("usb-host,bus=xhci.0,vendorid=0x0403,productid=0x6001"))
         assertFalse(args.contains("usb-tablet"))
     }
+
+    @Test
+    fun buildArgs_venus3dHardwareAcceleration() {
+        val vm = VmConfig(
+            name = "Venus 3D Test",
+            displayDevice = DisplayDevice.VIRTIO_VGA_GL,
+            venus3dEnabled = true,
+            venusHostMemoryMb = 4096,
+            resolution = DisplayResolution.FHD_1920x1080
+        )
+
+        val args = QemuCommandBuilder.buildArgs(vm)
+
+        val displayIdx = args.indexOf("-display")
+        assertTrue(displayIdx >= 0)
+        assertTrue(
+            "Display should request gl=es for hardware accelerated viewport",
+            args[displayIdx + 1].contains("gl=es")
+        )
+
+        val deviceIdx = args.indexOf("-device")
+        assertTrue(deviceIdx >= 0)
+        assertTrue(
+            args.any {
+                it.contains("virtio-vga-gl") &&
+                        it.contains("hostmem=4096M") &&
+                        it.contains("blob=true") &&
+                        it.contains("venus=true") &&
+                        it.contains("xres=1920,yres=1080")
+            }
+        )
+    }
+
+    @Test
+    fun buildArgs_aarch64VirtWithPflashUefiAndVenusGpu() {
+        val vm = VmConfig(
+            name = "Alpine AArch64 Test",
+            architecture = com.qemusdl.app.data.GuestArchitecture.AARCH64,
+            cpuModel = "max",
+            cpuCores = 4,
+            memoryMb = 2048,
+            machineType = MachineType.VIRT,
+            displayDevice = DisplayDevice.VIRTIO_GPU_PCI,
+            venus3dEnabled = true,
+            venusHostMemoryMb = 2048,
+            resolution = DisplayResolution.HD_1280x720,
+            usbTabletEnabled = false // Should still attach usb-kbd and usb-tablet on AArch64 virt
+        )
+
+        val args = QemuCommandBuilder.buildArgs(
+            config = vm,
+            resolvedDiskPath = "/data/disks/alpine_arm64.qcow2",
+            resolvedIsoPath = "/data/isos/alpine-virt-aarch64.iso",
+            firmwareDir = "/data/files/qemu-firmware",
+            edk2CodePath = "/data/files/qemu-firmware/edk2-aarch64-code.fd",
+            edk2VarsPath = "/data/files/nvram/vm1-edk2-arm-vars.fd"
+        )
+
+        assertEquals("qemu-system-aarch64", args.first())
+        assertTrue(args.contains("virt,accel=tcg"))
+        val cpuIdx = args.indexOf("-cpu")
+        assertEquals("max", args[cpuIdx + 1])
+
+        // Verify EDK2 UEFI pflash unit=0 (code, readonly) and unit=1 (per-VM writable vars)
+        assertTrue(args.contains("if=pflash,format=raw,unit=0,readonly=on,file=/data/files/qemu-firmware/edk2-aarch64-code.fd"))
+        assertTrue(args.contains("if=pflash,format=raw,unit=1,file=/data/files/nvram/vm1-edk2-arm-vars.fd"))
+
+        // Verify virtio-gpu-gl-pci with Venus Vulkan 3D passthrough instead of virtio-vga
+        assertTrue(
+            args.any {
+                it.contains("virtio-gpu-gl-pci") &&
+                        it.contains("hostmem=2048M") &&
+                        it.contains("blob=true") &&
+                        it.contains("venus=true") &&
+                        it.contains("xres=1280,yres=720")
+            }
+        )
+        assertFalse(args.any { it.contains("virtio-vga") })
+
+        // Verify xHCI + usb-kbd + usb-tablet always attached for AArch64 virt
+        assertTrue(args.contains("qemu-xhci,id=xhci"))
+        assertTrue(args.contains("usb-kbd,bus=xhci.0"))
+        assertTrue(args.contains("usb-tablet,bus=xhci.0"))
+
+        // Verify virtio-scsi CD-ROM for AArch64 ISO
+        assertTrue(args.contains("virtio-scsi-pci,id=scsi0"))
+        assertTrue(args.any { it.contains("file=/data/isos/alpine-virt-aarch64.iso") && it.contains("media=cdrom") })
+    }
 }

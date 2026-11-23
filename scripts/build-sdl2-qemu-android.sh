@@ -19,6 +19,9 @@ GLIB_VERSION="2.82.4"
 PIXMAN_VERSION="0.44.2"
 LIBSLIRP_VERSION="4.8.0"
 LIBUSB_VERSION="1.0.27"
+LIBDRM_VERSION="2.4.120"
+LIBEPOXY_VERSION="1.5.10"
+VIRGLRENDERER_VERSION="1.0.1"
 QEMU_VERSION="9.2.0"
 
 for arg in "$@"; do
@@ -118,6 +121,45 @@ Libs: -lz
 Cflags:
 EOF
 
+cat > "$PKGCFG_DIR/vulkan.pc" <<EOF
+prefix=$SYSROOT/usr
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib/$TRIPLE/$API_LEVEL
+includedir=\${prefix}/include
+
+Name: vulkan
+Description: Android NDK Vulkan
+Version: 1.3
+Libs: -lvulkan
+Cflags:
+EOF
+
+cat > "$PKGCFG_DIR/egl.pc" <<EOF
+prefix=$SYSROOT/usr
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib/$TRIPLE/$API_LEVEL
+includedir=\${prefix}/include
+
+Name: egl
+Description: Android NDK EGL
+Version: 1.5
+Libs: -lEGL
+Cflags:
+EOF
+
+cat > "$PKGCFG_DIR/glesv2.pc" <<EOF
+prefix=$SYSROOT/usr
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib/$TRIPLE/$API_LEVEL
+includedir=\${prefix}/include
+
+Name: glesv2
+Description: Android NDK OpenGL ES v2/v3
+Version: 3.2
+Libs: -lGLESv3
+Cflags:
+EOF
+
 # Build minimal static PIC libintl (proxy-libintl replacement for Android Bionic)
 cat > "$PREFIX/include/libintl.h" <<'EOF'
 #ifndef QEMUSDL_PROXY_LIBINTL_H
@@ -195,11 +237,18 @@ else
   echo "[1/7] Reusing existing libSDL2.so (refreshing sdl2.pc prefix)..."
 fi
 
-# Ensure sdl2.pc prefix matches current $PREFIX (important if moved)
-if [[ -f "$PKGCFG_DIR/sdl2.pc" ]]; then
-  sed -i.bak "s|^prefix=.*|prefix=$PREFIX|" "$PKGCFG_DIR/sdl2.pc"
-  rm -f "$PKGCFG_DIR/sdl2.pc.bak"
-fi
+# Ensure all .pc prefixes match current $PREFIX (important if workspace was moved or cloned)
+for pc in "$PKGCFG_DIR"/*.pc; do
+  if [[ -f "$pc" && ! -L "$pc" ]]; then
+    case "$(basename "$pc")" in
+      zlib.pc|vulkan.pc|egl.pc|glesv2.pc) ;;
+      *)
+        sed -i.bak "s|^prefix=.*|prefix=$PREFIX|" "$pc"
+        rm -f "${pc}.bak"
+        ;;
+    esac
+  fi
+done
 
 # ------------------------------------------------------------------------------
 # Meson cross file shared by glib, pixman, libslirp, and QEMU
@@ -417,12 +466,163 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 8. QEMU 9.2.0 x86_64-softmmu -> libqemu-system-x86_64.so (SDL2, no VNC)
+# 8. libdrm (headers + core static PIC lib for syncobj & dmabuf)
+# ------------------------------------------------------------------------------
+if [[ ! -f "$PREFIX/lib/libdrm.a" ]]; then
+  DRM_TAR="$SRC_DIR/libdrm-${LIBDRM_VERSION}.tar.xz"
+  DRM_SRC="$SRC_DIR/libdrm-${LIBDRM_VERSION}"
+  if [[ ! -d "$DRM_SRC" ]]; then
+    echo "[8/11] Downloading libdrm ${LIBDRM_VERSION}..."
+    curl -fsSL "https://dri.freedesktop.org/libdrm/libdrm-${LIBDRM_VERSION}.tar.xz" -o "$DRM_TAR"
+    tar -xJf "$DRM_TAR" -C "$SRC_DIR"
+  fi
+  echo "[8/11] Building libdrm ${LIBDRM_VERSION}..."
+  rm -rf "$WORK_DIR/build-drm-$ABI"
+  meson setup "$WORK_DIR/build-drm-$ABI" "$DRM_SRC" \
+    --cross-file="$CROSS_FILE" \
+    --prefix="$PREFIX" \
+    --libdir=lib \
+    --default-library=static \
+    -Dintel=disabled \
+    -Dradeon=disabled \
+    -Damdgpu=disabled \
+    -Dnouveau=disabled \
+    -Dvmwgfx=disabled \
+    -Domap=disabled \
+    -Dexynos=disabled \
+    -Dfreedreno=disabled \
+    -Dtegra=disabled \
+    -Dvc4=disabled \
+    -Detnaviv=disabled \
+    -Dcairo-tests=disabled \
+    -Dvalgrind=disabled \
+    -Dtests=false \
+    -Dudev=false \
+    -Dman-pages=disabled
+  ninja -C "$WORK_DIR/build-drm-$ABI" -j"$JOBS"
+  ninja -C "$WORK_DIR/build-drm-$ABI" install
+else
+  echo "[8/11] Reusing existing libdrm.a"
+fi
+
+# ------------------------------------------------------------------------------
+# 9. libepoxy (static -fPIC with EGL support for Android)
+# ------------------------------------------------------------------------------
+if [[ ! -f "$PREFIX/lib/libepoxy.a" ]]; then
+  EPOXY_TAR="$SRC_DIR/libepoxy-${LIBEPOXY_VERSION}.tar.gz"
+  EPOXY_SRC="$SRC_DIR/libepoxy-${LIBEPOXY_VERSION}"
+  if [[ ! -d "$EPOXY_SRC" ]]; then
+    echo "[9/11] Downloading libepoxy ${LIBEPOXY_VERSION}..."
+    curl -fsSL "https://github.com/anholt/libepoxy/archive/refs/tags/${LIBEPOXY_VERSION}.tar.gz" -o "$EPOXY_TAR"
+    tar -xzf "$EPOXY_TAR" -C "$SRC_DIR"
+  fi
+  echo "[9/11] Building libepoxy ${LIBEPOXY_VERSION}..."
+  python3 - "$EPOXY_SRC" <<'PYEOF'
+import sys, os
+src = sys.argv[1]
+h_path = os.path.join(src, "src/dispatch_common.h")
+h_text = open(h_path, "r", encoding="utf-8").read()
+if "defined(ANDROID) || defined(__ANDROID__)" not in h_text:
+    h_text = h_text.replace("#elif defined(ANDROID)", "#elif defined(ANDROID) || defined(__ANDROID__)", 1)
+    open(h_path, "w", encoding="utf-8").write(h_text)
+c_path = os.path.join(src, "src/dispatch_common.c")
+c_text = open(c_path, "r", encoding="utf-8").read()
+if "epoxy_is_desktop_gl(void)\n{\n#ifdef __ANDROID__" not in c_text:
+    c_text = c_text.replace(
+        "bool\nepoxy_is_desktop_gl(void)\n{\n    const char *es_prefix = \"OpenGL ES\";",
+        "bool\nepoxy_is_desktop_gl(void)\n{\n#ifdef __ANDROID__\n    return false;\n#else\n    const char *es_prefix = \"OpenGL ES\";",
+        1
+    ).replace(
+        "    return strncmp(es_prefix, version, strlen(es_prefix));\n}",
+        "    return strncmp(es_prefix, version, strlen(es_prefix));\n#endif\n}",
+        1
+    ).replace(
+        "void *\nepoxy_get_bootstrap_proc_address(const char *name)\n{",
+        "void *\nepoxy_get_bootstrap_proc_address(const char *name)\n{\n#ifdef __ANDROID__\n    return epoxy_gles2_dlsym(name);\n#endif",
+        1
+    ).replace(
+        "void *\nepoxy_get_proc_address(const char *name)\n{",
+        "void *\nepoxy_get_proc_address(const char *name)\n{\n#ifdef __ANDROID__\n    if (get_dlopen_handle(&api.gles2_handle, GLES2_LIB, false, true)) {\n        void *func = do_dlsym(&api.gles2_handle, name, false);\n        if (func)\n            return func;\n    }\n    return eglGetProcAddress(name);\n#endif",
+        1
+    )
+    open(c_path, "w", encoding="utf-8").write(c_text)
+PYEOF
+  rm -rf "$WORK_DIR/build-epoxy-$ABI"
+  meson setup "$WORK_DIR/build-epoxy-$ABI" "$EPOXY_SRC" \
+    --cross-file="$CROSS_FILE" \
+    --prefix="$PREFIX" \
+    --libdir=lib \
+    --default-library=static \
+    -Dglx=no \
+    -Degl=yes \
+    -Dtests=false
+  ninja -C "$WORK_DIR/build-epoxy-$ABI" -j"$JOBS"
+  ninja -C "$WORK_DIR/build-epoxy-$ABI" install
+else
+  echo "[9/11] Reusing existing libepoxy.a"
+fi
+
+# ------------------------------------------------------------------------------
+# 10. virglrenderer with Venus Vulkan passthrough (-Dvenus=true)
+# ------------------------------------------------------------------------------
+if [[ ! -f "$PREFIX/lib/libvirglrenderer.a" && ! -f "$PREFIX/lib/libvirglrenderer.so" ]]; then
+  VIRGL_TAR="$SRC_DIR/virglrenderer-${VIRGLRENDERER_VERSION}.tar.bz2"
+  VIRGL_SRC="$SRC_DIR/virglrenderer-virglrenderer-${VIRGLRENDERER_VERSION}"
+  if [[ ! -d "$VIRGL_SRC" ]]; then
+    echo "[10/11] Downloading virglrenderer ${VIRGLRENDERER_VERSION}..."
+    curl -fsSL "https://gitlab.freedesktop.org/virgl/virglrenderer/-/archive/virglrenderer-${VIRGLRENDERER_VERSION}/virglrenderer-virglrenderer-${VIRGLRENDERER_VERSION}.tar.bz2" -o "$VIRGL_TAR"
+    tar -xjf "$VIRGL_TAR" -C "$SRC_DIR"
+  fi
+  echo "[10/11] Building virglrenderer ${VIRGLRENDERER_VERSION} (Venus Vulkan enabled)..."
+  python3 - "$VIRGL_SRC" <<'PYEOF'
+import sys, os
+src = sys.argv[1]
+rs_h = os.path.join(src, "server/render_server.h")
+t = open(rs_h, "r", encoding="utf-8").read()
+if "render_server_run_direct" not in t:
+    t = t.replace(
+        "render_server_main(int argc, char **argv, struct render_context_args *ctx_args);",
+        "render_server_main(int argc, char **argv, struct render_context_args *ctx_args);\n\nbool\nrender_server_run_direct(int client_fd, struct render_context_args *ctx_args);",
+        1
+    )
+    open(rs_h, "w", encoding="utf-8").write(t)
+sm = os.path.join(src, "src/meson.build")
+t = open(sm, "r", encoding="utf-8").read()
+if "'../server/render_server.c'" not in t:
+    t = t.replace(
+        "   'proxy/proxy_socket.c',\n]",
+        "   'proxy/proxy_socket.c',\n   '../server/render_client.c',\n   '../server/render_common.c',\n   '../server/render_context.c',\n   '../server/render_server.c',\n   '../server/render_socket.c',\n   '../server/render_state.c',\n   '../server/render_worker.c',\n]",
+        1
+    ).replace(
+        "include_directories: [inc_gallium, inc_configuration, 'venus', 'drm', 'drm/drm-uapi'],",
+        "include_directories: [inc_gallium, inc_configuration, 'venus', 'drm', 'drm/drm-uapi', '../server'],",
+        1
+    )
+    open(sm, "w", encoding="utf-8").write(t)
+PYEOF
+  rm -rf "$WORK_DIR/build-virgl-$ABI"
+  meson setup "$WORK_DIR/build-virgl-$ABI" "$VIRGL_SRC" \
+    --cross-file="$CROSS_FILE" \
+    --prefix="$PREFIX" \
+    --libdir=lib \
+    --default-library=static \
+    -Dvenus=true \
+    -Drender-server-worker=thread \
+    -Dplatforms=auto \
+    -Dtests=false
+  ninja -C "$WORK_DIR/build-virgl-$ABI" -j"$JOBS"
+  ninja -C "$WORK_DIR/build-virgl-$ABI" install
+else
+  echo "[10/11] Reusing existing libvirglrenderer"
+fi
+
+# ------------------------------------------------------------------------------
+# 11. QEMU 9.2.0 x86_64-softmmu -> libqemu-system-x86_64.so (SDL2, Venus Vulkan, no VNC)
 # ------------------------------------------------------------------------------
 QEMU_TAR="$SRC_DIR/qemu-${QEMU_VERSION}.tar.xz"
 QEMU_SRC="$SRC_DIR/qemu-${QEMU_VERSION}"
 if [[ ! -d "$QEMU_SRC" ]]; then
-  echo "[8/8] Downloading QEMU ${QEMU_VERSION}..."
+  echo "[11/11] Downloading QEMU ${QEMU_VERSION}..."
   curl -fsSL "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" -o "$QEMU_TAR"
   tar -xJf "$QEMU_TAR" -C "$SRC_DIR"
 fi
@@ -497,6 +697,88 @@ if "memfd_create(shm_name->str" not in text:
     print("Patched backends/hostmem-shm.c for Android memfd_create.")
 PYEOF
 
+# Patch QEMU ui/sdl2.c so DISPLAY_GL_MODE_ES requests an OpenGL ES 3.0 context before SDL_CreateWindow and ensures SDL_GL_MakeCurrent
+python3 - "$QEMU_SRC/ui/sdl2.c" <<'PYEOF'
+import sys
+path = sys.argv[1]
+text = open(path, "r", encoding="utf-8").read()
+old = """#ifdef CONFIG_OPENGL
+    if (scon->opengl) {
+        flags |= SDL_WINDOW_OPENGL;
+    }
+#endif
+
+    scon->real_window = SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED,
+                                         SDL_WINDOWPOS_UNDEFINED,
+                                         surface_width(scon->surface),
+                                         surface_height(scon->surface),
+                                         flags);
+    if (scon->opengl) {
+        const char *driver = "opengl";
+
+        if (scon->opts->gl == DISPLAY_GL_MODE_ES) {
+            driver = "opengles2";
+        }
+
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, driver);
+        SDL_SetHint(SDL_HINT_RENDER_BATCHING, "1");
+
+        scon->winctx = SDL_GL_CreateContext(scon->real_window);
+        SDL_GL_SetSwapInterval(0);
+    } else {"""
+new = """#ifdef CONFIG_OPENGL
+    if (scon->opengl) {
+        flags |= SDL_WINDOW_OPENGL;
+        if (scon->opts->gl == DISPLAY_GL_MODE_ES) {
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
+                                SDL_GL_CONTEXT_PROFILE_ES);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+        }
+    }
+#endif
+
+    scon->real_window = SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED,
+                                         SDL_WINDOWPOS_UNDEFINED,
+                                         surface_width(scon->surface),
+                                         surface_height(scon->surface),
+                                         flags);
+    if (scon->opengl) {
+        const char *driver = "opengl";
+
+        if (scon->opts->gl == DISPLAY_GL_MODE_ES) {
+            driver = "opengles2";
+        }
+
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, driver);
+        SDL_SetHint(SDL_HINT_RENDER_BATCHING, "1");
+
+        scon->winctx = SDL_GL_CreateContext(scon->real_window);
+        if (!scon->winctx && scon->opts->gl == DISPLAY_GL_MODE_ES) {
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+            scon->winctx = SDL_GL_CreateContext(scon->real_window);
+        }
+        if (scon->winctx) {
+            SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
+#ifdef CONFIG_OPENGL
+            qemu_egl_display = eglGetCurrentDisplay();
+#endif
+        }
+        SDL_GL_SetSwapInterval(0);
+    } else {"""
+if old in text:
+    text = text.replace(old, new, 1)
+if "sdl2_num_outputs > 1" not in text:
+    text = text.replace(
+        "    if (sdl2_num_outputs == 0) {\n        return;\n    }",
+        "    if (sdl2_num_outputs == 0) {\n        return;\n    }\n#ifdef __ANDROID__\n    if (sdl2_num_outputs > 1) {\n        sdl2_num_outputs = 1;\n    }\n#endif",
+        1
+    )
+open(path, "w", encoding="utf-8").write(text)
+print("Patched ui/sdl2.c for Android OpenGL ES 3.0 context creation and single-window output.")
+PYEOF
+
 # Apply Android AArch64 AAPCS64 coroutine backend (avoids Bionic 14+ PAC/longjmp SIGILL)
 if [[ -f "$SCRIPT_DIR/patches/coroutine-sigaltstack-android.c" ]]; then
   cp -f "$SCRIPT_DIR/patches/coroutine-sigaltstack-android.c" "$QEMU_SRC/util/coroutine-sigaltstack.c"
@@ -516,7 +798,7 @@ QEMU_BUILD="$WORK_DIR/build-qemu-$ABI"
 rm -rf "$QEMU_BUILD"
 mkdir -p "$QEMU_BUILD"
 
-echo "[7/7] Configuring QEMU ${QEMU_VERSION} (x86_64-softmmu, SDL2, no VNC)..."
+echo "[11/11] Configuring QEMU ${QEMU_VERSION} (x86_64-softmmu + aarch64-softmmu, SDL2, Venus 3D / virgl, no VNC)..."
 pushd "$QEMU_BUILD" >/dev/null
 PKG_CONFIG_LIBDIR="$PKGCFG_DIR" \
 PKG_CONFIG_PATH="$PKGCFG_DIR" \
@@ -535,14 +817,14 @@ MESON="$(which meson)" \
   --python="$HOST_VENV/bin/python3" \
   --ninja="$(which ninja)" \
   --cpu="$QEMU_CPU" \
-  --target-list=x86_64-softmmu \
+  --target-list=x86_64-softmmu,aarch64-softmmu \
   --prefix="$PREFIX" \
   --enable-sdl \
   --disable-vnc \
   --disable-gtk \
   --disable-curses \
-  --disable-opengl \
-  --disable-virglrenderer \
+  --enable-opengl \
+  --enable-virglrenderer \
   --disable-dbus-display \
   --enable-slirp \
   --enable-libusb \
@@ -562,38 +844,50 @@ MESON="$(which meson)" \
   --disable-vduse-blk-export \
   --disable-virtfs \
   --disable-capstone \
-  --disable-fdt \
+  --enable-fdt=internal \
   --disable-werror \
   --disable-pie \
-  --extra-cflags="-fPIC -O2 -I$PREFIX/include -I$PREFIX/include/SDL2 -I$PREFIX/include/libusb-1.0" \
-  --extra-ldflags="-L$PREFIX/lib -lSDL2 -lusb-1.0 -llog -landroid -lz"
+  --extra-cflags="-fPIC -O2 -I$PREFIX/include -I$PREFIX/include/SDL2 -I$PREFIX/include/libusb-1.0 -I$PREFIX/include/virgl -I$PREFIX/include/epoxy" \
+  --extra-ldflags="-L$PREFIX/lib -lSDL2 -lusb-1.0 -lvirglrenderer -lepoxy -ldrm -lvulkan -lEGL -lGLESv3 -llog -landroid -lz"
 
-echo "[8/8] Compiling libqemu-system-x86_64.so..."
-ninja -j"$JOBS" libqemu-system-x86_64.so
+echo "[11/11] Compiling libqemu-system-x86_64.so and libqemu-system-aarch64.so..."
+ninja -j"$JOBS" libqemu-system-x86_64.so libqemu-system-aarch64.so pc-bios/edk2-aarch64-code.fd pc-bios/edk2-arm-vars.fd
 popd >/dev/null
 
 cp -f "$QEMU_BUILD/libqemu-system-x86_64.so" "$JNI_OUT/libqemu-system-x86_64.so"
 "$STRIP" --strip-unneeded "$JNI_OUT/libqemu-system-x86_64.so"
 
-# Copy x86_64 SeaBIOS / VGABIOS / PXE firmware + keymaps into Android assets
-echo "Bundling x86_64 SeaBIOS/VGABIOS firmware into $FIRMWARE_ASSETS_OUT..."
+cp -f "$QEMU_BUILD/libqemu-system-aarch64.so" "$JNI_OUT/libqemu-system-aarch64.so"
+"$STRIP" --strip-unneeded "$JNI_OUT/libqemu-system-aarch64.so"
+
+# Copy x86_64 SeaBIOS / VGABIOS / PXE + AArch64 EDK2 UEFI firmware + keymaps into Android assets
+echo "Bundling SeaBIOS/VGABIOS/EDK2 firmware into $FIRMWARE_ASSETS_OUT..."
 for rom in \
   bios.bin bios-256k.bin bios-microvm.bin \
   vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-qxl.bin \
   vgabios-vmware.bin vgabios-cirrus.bin vgabios-bochs-display.bin vgabios-ramfb.bin \
-  efi-virtio.rom efi-e1000.rom efi-e1000e.rom \
+  efi-virtio.rom efi-e1000.rom efi-e1000e.rom efi-rtl8139.rom \
   kvmvapic.bin linuxboot.bin linuxboot_dma.bin; do
   if [[ -f "$QEMU_SRC/pc-bios/$rom" ]]; then
     cp -f "$QEMU_SRC/pc-bios/$rom" "$FIRMWARE_ASSETS_OUT/$rom"
   fi
 done
+for edk2_rom in edk2-aarch64-code.fd edk2-arm-vars.fd; do
+  if [[ -f "$QEMU_BUILD/pc-bios/$edk2_rom" ]]; then
+    cp -f "$QEMU_BUILD/pc-bios/$edk2_rom" "$FIRMWARE_ASSETS_OUT/$edk2_rom"
+  elif [[ -f "$QEMU_SRC/pc-bios/${edk2_rom}.bz2" ]]; then
+    bzip2 -dc "$QEMU_SRC/pc-bios/${edk2_rom}.bz2" > "$FIRMWARE_ASSETS_OUT/$edk2_rom"
+  fi
+done
 rm -rf "$FIRMWARE_ASSETS_OUT/keymaps"
 cp -Rf "$QEMU_SRC/pc-bios/keymaps" "$FIRMWARE_ASSETS_OUT/keymaps"
+rm -f "$FIRMWARE_ASSETS_OUT/keymaps/meson.build"
 
 echo "============================================================"
 echo " SUCCESS! Installed:"
 echo "  - $JNI_OUT/libSDL2.so"
 echo "  - $JNI_OUT/libusb-1.0.so"
 echo "  - $JNI_OUT/libqemu-system-x86_64.so"
-echo "  - $FIRMWARE_ASSETS_OUT/ (SeaBIOS + VGABIOS + keymaps)"
+echo "  - $JNI_OUT/libqemu-system-aarch64.so"
+echo "  - $FIRMWARE_ASSETS_OUT/ (SeaBIOS + EDK2 AArch64 + VGABIOS + keymaps)"
 echo "============================================================"

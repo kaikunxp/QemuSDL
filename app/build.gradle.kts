@@ -63,7 +63,11 @@ android {
   packaging {
     jniLibs {
       useLegacyPackaging = true
-      keepDebugSymbols += setOf("**/libqemu-system-x86_64.so", "**/libSDL2.so")
+      keepDebugSymbols += setOf(
+        "**/libqemu-system-x86_64.so",
+        "**/libqemu-system-aarch64.so",
+        "**/libSDL2.so"
+      )
     }
     resources {
       excludes += "/META-INF/{AL2.0,LGPL2.1}"

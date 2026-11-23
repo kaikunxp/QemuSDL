@@ -93,9 +93,9 @@ fun VmSetupScreen(
     val downloadStates by viewModel.isoDownloadStates.collectAsState()
 
     val sourceVm = allVms.firstOrNull { it.id == vmId } ?: VmConfig(id = vmId)
-    val recommendedIso = remember(sourceVm.recommendedIsoId, sourceVm.osPreset) {
+    val recommendedIso = remember(sourceVm.recommendedIsoId, sourceVm.osPreset, sourceVm.architecture) {
         IsoCatalog.findById(sourceVm.recommendedIsoId)
-            ?: IsoCatalog.recommendedForPreset(sourceVm.osPreset)
+            ?: IsoCatalog.recommendedForPreset(sourceVm.osPreset, sourceVm.architecture)
     }
     val recommendedDownloadState = downloadStates[recommendedIso.id] ?: IsoDownloadState.Idle
     val existingRecommendedIso = downloadedIsos.firstOrNull { it.name == recommendedIso.targetFileName }
@@ -115,8 +115,8 @@ fun VmSetupScreen(
     var diskSizeMb by remember(sourceVm.osPreset) {
         mutableIntStateOf(
             when (sourceVm.osPreset) {
-                OsPreset.LINUX_ALPINE -> 4096
-                OsPreset.LINUX_DEBIAN -> 16384
+                OsPreset.LINUX_ALPINE, OsPreset.LINUX_ALPINE_AARCH64 -> 4096
+                OsPreset.LINUX_DEBIAN, OsPreset.LINUX_DEBIAN_AARCH64 -> 16384
                 OsPreset.FREEDOS -> 512
                 else -> 8192
             }
@@ -184,7 +184,7 @@ fun VmSetupScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("First-Time VM Setup") },
+                title = { Text("First-Time VM Setup (${sourceVm.architecture.badgeText})") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
@@ -224,7 +224,7 @@ fun VmSetupScreen(
                         }
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            text = "Attach or download a bootable x86_64 ISO and create a virtual QCOW2 disk so SeaBIOS boots straight into your OS on the first launch.",
+                            text = "Attach or download a bootable ${sourceVm.architecture.badgeText} ISO and create a virtual QCOW2 disk so firmware boots straight into your OS on the first launch.",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }

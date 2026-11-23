@@ -35,12 +35,14 @@ struct LoadedNativeRuntime {
     void* qemuHandle = nullptr;
     bool sdlLoaded = false;
     bool qemuLoaded = false;
+    bool qemuAarch64Loaded = false;
     bool hasQemuInit = false;
     bool hasSdlMain = false;
     bool hasLibusb = false;
     bool hasLibusbWrap = false;
     std::string sdlPath;
     std::string qemuPath;
+    std::string qemuAarch64Path;
     std::string detail;
 
     void close() {
@@ -54,6 +56,7 @@ struct LoadedNativeRuntime {
         }
         sdlLoaded = false;
         qemuLoaded = false;
+        qemuAarch64Loaded = false;
         hasQemuInit = false;
         hasSdlMain = false;
     }
@@ -130,28 +133,35 @@ std::string findElfLib(const std::vector<std::string>& candidates) {
 
 LoadedNativeRuntime probeLibrariesMetadataOnly(const std::string& nativeLibDir, const std::string& customLibDir) {
     // Inspect ELF files on disk WITHOUT calling dlopen()/dlclose() in the UI process,
-    // because libqemu-system-x86_64.so spawns background RCU threads in .init_array
+    // because libqemu-system-*.so spawns background RCU threads in .init_array
     // constructors that would SIGSEGV if unmapped by dlclose().
     LoadedNativeRuntime rt;
     std::vector<std::string> sdlCandidates;
-    std::vector<std::string> qemuCandidates;
+    std::vector<std::string> qemuX86Candidates;
+    std::vector<std::string> qemuArm64Candidates;
 
     if (!nativeLibDir.empty()) {
         sdlCandidates.push_back(nativeLibDir + "/libSDL2.so");
-        qemuCandidates.push_back(nativeLibDir + "/libqemu-system-x86_64.so");
+        qemuX86Candidates.push_back(nativeLibDir + "/libqemu-system-x86_64.so");
+        qemuArm64Candidates.push_back(nativeLibDir + "/libqemu-system-aarch64.so");
     }
     if (!customLibDir.empty()) {
         sdlCandidates.push_back(customLibDir + "/libSDL2.so");
-        qemuCandidates.push_back(customLibDir + "/libqemu-system-x86_64.so");
+        qemuX86Candidates.push_back(customLibDir + "/libqemu-system-x86_64.so");
+        qemuArm64Candidates.push_back(customLibDir + "/libqemu-system-aarch64.so");
     }
 
     rt.sdlPath = findElfLib(sdlCandidates);
     rt.sdlLoaded = !rt.sdlPath.empty();
 
-    rt.qemuPath = findElfLib(qemuCandidates);
+    rt.qemuPath = findElfLib(qemuX86Candidates);
     rt.qemuLoaded = !rt.qemuPath.empty();
-    rt.hasQemuInit = rt.qemuLoaded;
-    rt.hasSdlMain = rt.qemuLoaded;
+
+    rt.qemuAarch64Path = findElfLib(qemuArm64Candidates);
+    rt.qemuAarch64Loaded = !rt.qemuAarch64Path.empty();
+
+    rt.hasQemuInit = rt.qemuLoaded || rt.qemuAarch64Loaded;
+    rt.hasSdlMain = rt.qemuLoaded || rt.qemuAarch64Loaded;
 
     std::vector<std::string> libusbCandidates;
     if (!nativeLibDir.empty()) {
@@ -164,18 +174,46 @@ LoadedNativeRuntime probeLibrariesMetadataOnly(const std::string& nativeLibDir, 
     rt.hasLibusb = !libusbPath.empty();
     rt.hasLibusbWrap = rt.hasLibusb;
 
-    if (rt.sdlLoaded && rt.qemuLoaded) {
+    if (rt.sdlLoaded && rt.qemuLoaded && rt.qemuAarch64Loaded) {
+        rt.detail = "Native libSDL2.so + libqemu-system-x86_64.so + libqemu-system-aarch64.so ready for in-process SDL2 boot.";
+    } else if (rt.sdlLoaded && rt.qemuLoaded) {
         rt.detail = "Native libSDL2.so + libqemu-system-x86_64.so ready for in-process SDL2 boot.";
-    } else if (rt.sdlLoaded && !rt.qemuLoaded) {
-        rt.detail = "libSDL2.so found, awaiting libqemu-system-x86_64.so (GLES3 viewport fallback active).";
+    } else if (rt.sdlLoaded && rt.qemuAarch64Loaded) {
+        rt.detail = "Native libSDL2.so + libqemu-system-aarch64.so ready for in-process SDL2 boot.";
+    } else if (rt.sdlLoaded) {
+        rt.detail = "libSDL2.so found, awaiting libqemu-system-x86_64.so / libqemu-system-aarch64.so (GLES3 viewport fallback active).";
     } else {
-        rt.detail = "GLES3 SDL2-compatible viewport ready. Add libSDL2.so + libqemu-system-x86_64.so to boot x86_64 guest OSes.";
+        rt.detail = "GLES3 SDL2-compatible viewport ready. Add libSDL2.so + libqemu-system-*.so to boot guest OSes.";
     }
     return rt;
 }
 
 LoadedNativeRuntime probeLibraries(const std::string& nativeLibDir, const std::string& customLibDir) {
     return probeLibrariesMetadataOnly(nativeLibDir, customLibDir);
+}
+
+LoadedNativeRuntime loadRuntimeForTarget(
+    const std::string& nativeLibDir,
+    const std::string& customLibDir,
+    bool isAarch64Target
+) {
+    // Dynamically dlopen ONLY the target architecture's QEMU shared object
+    // (libqemu-system-aarch64.so vs libqemu-system-x86_64.so) with RTLD_LOCAL
+    // so global QEMU symbols never collide across architectures.
+    LoadedNativeRuntime rt = probeLibrariesMetadataOnly(nativeLibDir, customLibDir);
+    if (!rt.sdlPath.empty()) {
+        rt.sdlHandle = dlopen(rt.sdlPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    }
+    const std::string& targetQemuSo = isAarch64Target ? rt.qemuAarch64Path : rt.qemuPath;
+    if (!targetQemuSo.empty()) {
+        rt.qemuHandle = dlopen(targetQemuSo.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (rt.qemuHandle) {
+            rt.hasQemuInit = dlsym(rt.qemuHandle, "qemu_init") != nullptr &&
+                             dlsym(rt.qemuHandle, "qemu_main_loop") != nullptr;
+            rt.hasSdlMain = dlsym(rt.qemuHandle, "SDL_main") != nullptr;
+        }
+    }
+    return rt;
 }
 
 std::string getAbiName() {
@@ -213,11 +251,13 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeProbeRuntime(
        << "\"bridgeLoaded\":true,"
        << "\"sdl2Loaded\":" << (rt.sdlLoaded ? "true" : "false") << ","
        << "\"qemuLoaded\":" << (rt.qemuLoaded ? "true" : "false") << ","
+       << "\"qemuAarch64Loaded\":" << (rt.qemuAarch64Loaded ? "true" : "false") << ","
        << "\"hasQemuEntry\":" << ((rt.hasQemuInit || rt.hasSdlMain) ? "true" : "false") << ","
        << "\"hasLibusb\":" << (rt.hasLibusb ? "true" : "false") << ","
        << "\"hasLibusbWrap\":" << (rt.hasLibusbWrap ? "true" : "false") << ","
        << "\"sdl2Path\":\"" << escapeJson(rt.sdlPath) << "\","
        << "\"qemuPath\":\"" << escapeJson(rt.qemuPath) << "\","
+       << "\"qemuAarch64Path\":\"" << escapeJson(rt.qemuAarch64Path) << "\","
        << "\"detail\":\"" << escapeJson(rt.detail) << "\""
        << "}";
     rt.close();
@@ -250,6 +290,8 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeStartSession(
         }
     }
 
+    const bool isAarch64Target = !args.empty() && args[0].find("aarch64") != std::string::npos;
+
     // Configure SDL2 Android video/render/audio environment variables before loading SDL2/QEMU
     setenv("SDL_VIDEODRIVER", "android", 1);
     setenv("SDL_RENDER_DRIVER", "opengles2", 1);
@@ -263,7 +305,7 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeStartSession(
     }
 
     gRuntime.close();
-    gRuntime = probeLibraries(nativeLibDir, customLibDir);
+    gRuntime = loadRuntimeForTarget(nativeLibDir, customLibDir, isAarch64Target);
 
     const bool canBootRealQemu =
         gRuntime.sdlHandle != nullptr && gRuntime.qemuHandle != nullptr &&
@@ -499,6 +541,7 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeSyncSdlViewport(
 ) {
     using GetWindowFromIdFn = void* (*)(uint32_t);
     using GetWindowSizeFn = void (*)(void*, int*, int*);
+    using GetWindowDataFn = void* (*)(void*, const char*);
     using GetRendererFn = void* (*)(void*);
     using RenderGetLogicalSizeFn = void (*)(void*, int*, int*);
     using AndroidSetScreenResFn = void (*)(int, int, int, int, float);
@@ -506,12 +549,13 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeSyncSdlViewport(
 
     static auto fnGetWin = reinterpret_cast<GetWindowFromIdFn>(dlsym(RTLD_DEFAULT, "SDL_GetWindowFromID"));
     static auto fnGetWinSize = reinterpret_cast<GetWindowSizeFn>(dlsym(RTLD_DEFAULT, "SDL_GetWindowSize"));
+    static auto fnGetWinData = reinterpret_cast<GetWindowDataFn>(dlsym(RTLD_DEFAULT, "SDL_GetWindowData"));
     static auto fnGetRenderer = reinterpret_cast<GetRendererFn>(dlsym(RTLD_DEFAULT, "SDL_GetRenderer"));
     static auto fnGetLogical = reinterpret_cast<RenderGetLogicalSizeFn>(dlsym(RTLD_DEFAULT, "SDL_RenderGetLogicalSize"));
     static auto fnSetRes = reinterpret_cast<AndroidSetScreenResFn>(dlsym(RTLD_DEFAULT, "Android_SetScreenResolution"));
     static auto fnSendResize = reinterpret_cast<AndroidSendResizeFn>(dlsym(RTLD_DEFAULT, "Android_SendResize"));
 
-    if (!fnGetWin || !fnGetRenderer || !fnGetLogical) {
+    if (!fnGetWin) {
         return 0L;
     }
 
@@ -534,14 +578,18 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeSyncSdlViewport(
         }
     }
 
-    void* renderer = fnGetRenderer(window);
-    if (!renderer) {
-        return 0L;
-    }
-
     int logicalW = 0;
     int logicalH = 0;
-    fnGetLogical(renderer, &logicalW, &logicalH);
+    if (fnGetRenderer && fnGetLogical) {
+        void* renderer = fnGetRenderer(window);
+        if (renderer) {
+            fnGetLogical(renderer, &logicalW, &logicalH);
+        }
+    }
+    if ((logicalW <= 0 || logicalH <= 0) && fnGetWinData) {
+        logicalW = static_cast<int>(reinterpret_cast<uintptr_t>(fnGetWinData(window, "qemu_guest_w")));
+        logicalH = static_cast<int>(reinterpret_cast<uintptr_t>(fnGetWinData(window, "qemu_guest_h")));
+    }
     if (logicalW <= 0 || logicalH <= 0) {
         return 0L;
     }

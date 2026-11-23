@@ -12,15 +12,20 @@ data class RuntimeProbeStatus(
     val bridgeLoaded: Boolean = false,
     val sdl2Loaded: Boolean = false,
     val qemuLoaded: Boolean = false,
+    val qemuAarch64Loaded: Boolean = false,
     val hasQemuEntry: Boolean = false,
     val hasLibusb: Boolean = false,
     val hasLibusbWrap: Boolean = false,
     val sdl2Path: String = "",
     val qemuPath: String = "",
+    val qemuAarch64Path: String = "",
     val detail: String = "Native bridge not initialized"
 ) {
     val isFullQemuReady: Boolean
-        get() = bridgeLoaded && sdl2Loaded && qemuLoaded && hasQemuEntry
+        get() = bridgeLoaded && sdl2Loaded && (qemuLoaded || qemuAarch64Loaded) && hasQemuEntry
+
+    val isBothArchsReady: Boolean
+        get() = bridgeLoaded && sdl2Loaded && qemuLoaded && qemuAarch64Loaded && hasQemuEntry
 }
 
 @Serializable

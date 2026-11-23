@@ -75,6 +75,7 @@ import com.qemusdl.app.data.BootOrder
 import com.qemusdl.app.data.DiskInterface
 import com.qemusdl.app.data.DisplayDevice
 import com.qemusdl.app.data.DisplayResolution
+import com.qemusdl.app.data.GuestArchitecture
 import com.qemusdl.app.data.MachineType
 import com.qemusdl.app.data.MouseEmulationMode
 import com.qemusdl.app.data.NetworkAdapterModel
@@ -106,7 +107,7 @@ fun VmEditorScreen(
     val downloadedIsos by viewModel.downloadedIsos.collectAsState()
 
     var config by remember(existing) {
-        mutableStateOf(existing ?: VmConfig(name = "New x86_64 VM"))
+        mutableStateOf(existing ?: VmConfig(name = "New Virtual Machine"))
     }
     var showCreateDiskDialog by remember { mutableStateOf(false) }
 
@@ -147,7 +148,7 @@ fun VmEditorScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(if (existing == null) "Create x86_64 VM" else "Configure VM")
+                    Text(if (existing == null) "Create ${config.architecture.badgeText} VM" else "Configure VM")
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -177,9 +178,9 @@ fun VmEditorScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Identity & OS Preset Card
+            // Identity, Architecture & OS Preset Card
             item {
-                EditorSectionCard(title = "Identity & OS Preset", icon = Icons.Rounded.Tune) {
+                EditorSectionCard(title = "Identity, Architecture & Preset", icon = Icons.Rounded.Tune) {
                     OutlinedTextField(
                         value = config.name,
                         onValueChange = { config = config.copy(name = it) },
@@ -189,14 +190,33 @@ fun VmEditorScreen(
                     )
 
                     Spacer(Modifier.height(12.dp))
-                    Text("Quick Preset", style = MaterialTheme.typography.labelLarge)
+                    Text("Guest Target Architecture", style = MaterialTheme.typography.labelLarge)
                     Spacer(Modifier.height(6.dp))
-
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        OsPreset.entries.forEach { preset ->
+                        GuestArchitecture.entries.forEach { arch ->
+                            FilterChip(
+                                selected = config.architecture == arch,
+                                onClick = { config = applyArchitectureSwitch(config, arch) },
+                                label = { Text(arch.label) }
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Text("Quick OS Preset (${config.architecture.badgeText})", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(6.dp))
+
+                    val archPresets = remember(config.architecture) {
+                        OsPreset.entries.filter { it.defaultArch == config.architecture }
+                    }
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        archPresets.forEach { preset ->
                             FilterChip(
                                 selected = config.osPreset == preset,
                                 onClick = { config = applyPresetDefaults(config, preset) },
@@ -209,7 +229,7 @@ fun VmEditorScreen(
 
             // Compute Card
             item {
-                EditorSectionCard(title = "x86_64 Compute", icon = Icons.Rounded.Memory) {
+                EditorSectionCard(title = "${config.architecture.badgeText} Compute", icon = Icons.Rounded.Memory) {
                     Text(
                         text = "CPU Cores: ${config.cpuCores} vCPU",
                         style = MaterialTheme.typography.titleMedium
@@ -243,7 +263,7 @@ fun VmEditorScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf("qemu64", "max", "Haswell", "Skylake-Client", "pentium3").forEach { cpu ->
+                        config.architecture.cpuModelOptions.forEach { cpu ->
                             FilterChip(
                                 selected = config.cpuModel == cpu,
                                 onClick = { config = config.copy(cpuModel = cpu) },
@@ -255,8 +275,14 @@ fun VmEditorScreen(
                     Spacer(Modifier.height(12.dp))
                     Text("Machine Chipset", style = MaterialTheme.typography.labelLarge)
                     Spacer(Modifier.height(6.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MachineType.entries.forEach { machine ->
+                    val availableMachines = remember(config.architecture) {
+                        MachineType.forArch(config.architecture)
+                    }
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        availableMachines.forEach { machine ->
                             FilterChip(
                                 selected = config.machineType == machine,
                                 onClick = { config = config.copy(machineType = machine) },
@@ -272,11 +298,14 @@ fun VmEditorScreen(
                 EditorSectionCard(title = "SDL2 Viewport & Graphics", icon = Icons.Rounded.Monitor) {
                     Text("Virtual GPU Device", style = MaterialTheme.typography.labelLarge)
                     Spacer(Modifier.height(6.dp))
+                    val availableDisplays = remember(config.architecture) {
+                        DisplayDevice.forArch(config.architecture)
+                    }
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        DisplayDevice.entries.forEach { dev ->
+                        availableDisplays.forEach { dev ->
                             FilterChip(
                                 selected = config.displayDevice == dev,
                                 onClick = { config = config.copy(displayDevice = dev) },
@@ -346,6 +375,37 @@ fun VmEditorScreen(
                         checked = config.sdlGlAcceleration,
                         onCheckedChange = { config = config.copy(sdlGlAcceleration = it) }
                     )
+
+                    if (config.displayDevice.supportsVenus) {
+                        Spacer(Modifier.height(10.dp))
+                        SwitchRow(
+                            title = "Venus Vulkan 3D Acceleration (venus=true)",
+                            subtitle = "VirtIO GPU 3D passthrough to Android GPU (libvulkan.so) for native-speed Vulkan/Direct3D",
+                            checked = config.venus3dEnabled,
+                            onCheckedChange = { config = config.copy(venus3dEnabled = it) }
+                        )
+
+                        if (config.venus3dEnabled) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "Host Memory Window (hostmem): ${config.venusHostMemoryMb} MB",
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(1024, 2048, 4096, 8192).forEach { mem ->
+                                    FilterChip(
+                                        selected = config.venusHostMemoryMb == mem,
+                                        onClick = { config = config.copy(venusHostMemoryMb = mem) },
+                                        label = { Text("${mem / 1024} GB") }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -411,7 +471,7 @@ fun VmEditorScreen(
                     }) {
                         Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Download x86_64 ISO")
+                        Text("Download ${config.architecture.badgeText} ISO")
                     }
 
                     if (downloadedIsos.isNotEmpty()) {
@@ -872,8 +932,18 @@ fun CreateDiskDialog(
     )
 }
 
+private fun applyArchitectureSwitch(current: VmConfig, arch: GuestArchitecture): VmConfig {
+    if (current.architecture == arch) return current
+    val defaultPreset = when (arch) {
+        GuestArchitecture.X86_64 -> OsPreset.LINUX_ALPINE
+        GuestArchitecture.AARCH64 -> OsPreset.LINUX_ALPINE_AARCH64
+    }
+    return applyPresetDefaults(current.copy(architecture = arch), defaultPreset)
+}
+
 private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig = when (preset) {
     OsPreset.LINUX_ALPINE -> current.copy(
+        architecture = GuestArchitecture.X86_64,
         osPreset = preset,
         cpuModel = "qemu64",
         cpuCores = 2,
@@ -881,9 +951,11 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         machineType = MachineType.Q35,
         displayDevice = DisplayDevice.VIRTIO_VGA,
         resolution = DisplayResolution.HD_1280x720,
-        sdlGlAcceleration = true
+        sdlGlAcceleration = true,
+        recommendedIsoId = "alpine-virt-x86_64"
     )
     OsPreset.LINUX_DEBIAN -> current.copy(
+        architecture = GuestArchitecture.X86_64,
         osPreset = preset,
         cpuModel = "max",
         cpuCores = 4,
@@ -891,9 +963,11 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         machineType = MachineType.Q35,
         displayDevice = DisplayDevice.VIRTIO_VGA,
         resolution = DisplayResolution.HD_1280x720,
-        sdlGlAcceleration = true
+        sdlGlAcceleration = true,
+        recommendedIsoId = "debian-netinst-amd64"
     )
     OsPreset.WINDOWS -> current.copy(
+        architecture = GuestArchitecture.X86_64,
         osPreset = preset,
         cpuModel = "Skylake-Client",
         cpuCores = 4,
@@ -905,6 +979,7 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         sdlGlAcceleration = false
     )
     OsPreset.FREEDOS -> current.copy(
+        architecture = GuestArchitecture.X86_64,
         osPreset = preset,
         cpuModel = "pentium3",
         cpuCores = 1,
@@ -914,9 +989,68 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         resolution = DisplayResolution.SVGA_800x600,
         diskInterface = DiskInterface.IDE,
         sdlGlAcceleration = false,
-        usbTabletEnabled = false
+        usbTabletEnabled = false,
+        recommendedIsoId = "freedos-13-livecd"
     )
-    OsPreset.CUSTOM -> current.copy(osPreset = preset)
+    OsPreset.CUSTOM -> current.copy(
+        architecture = GuestArchitecture.X86_64,
+        osPreset = preset,
+        machineType = if (current.machineType.supportedArch == GuestArchitecture.X86_64) current.machineType else MachineType.Q35,
+        displayDevice = if (current.displayDevice.isSupportedOn(GuestArchitecture.X86_64)) current.displayDevice else DisplayDevice.VIRTIO_VGA
+    )
+    OsPreset.LINUX_ALPINE_AARCH64 -> current.copy(
+        architecture = GuestArchitecture.AARCH64,
+        osPreset = preset,
+        cpuModel = "max",
+        cpuCores = 4,
+        memoryMb = 1024,
+        machineType = MachineType.VIRT,
+        displayDevice = DisplayDevice.VIRTIO_GPU_PCI,
+        resolution = DisplayResolution.HD_1280x720,
+        diskInterface = DiskInterface.VIRTIO,
+        sdlGlAcceleration = true,
+        usbXhciEnabled = true,
+        usbTabletEnabled = true,
+        recommendedIsoId = "alpine-virt-aarch64"
+    )
+    OsPreset.LINUX_DEBIAN_AARCH64 -> current.copy(
+        architecture = GuestArchitecture.AARCH64,
+        osPreset = preset,
+        cpuModel = "max",
+        cpuCores = 4,
+        memoryMb = 2048,
+        machineType = MachineType.VIRT,
+        displayDevice = DisplayDevice.VIRTIO_GPU_PCI,
+        resolution = DisplayResolution.HD_1280x720,
+        diskInterface = DiskInterface.VIRTIO,
+        sdlGlAcceleration = true,
+        usbXhciEnabled = true,
+        usbTabletEnabled = true,
+        recommendedIsoId = "debian-netinst-arm64"
+    )
+    OsPreset.WINDOWS_AARCH64 -> current.copy(
+        architecture = GuestArchitecture.AARCH64,
+        osPreset = preset,
+        cpuModel = "max",
+        cpuCores = 4,
+        memoryMb = 4096,
+        machineType = MachineType.VIRT,
+        displayDevice = DisplayDevice.RAMFB,
+        resolution = DisplayResolution.HD_1280x720,
+        diskInterface = DiskInterface.VIRTIO,
+        sdlGlAcceleration = true,
+        usbXhciEnabled = true,
+        usbTabletEnabled = true
+    )
+    OsPreset.CUSTOM_AARCH64 -> current.copy(
+        architecture = GuestArchitecture.AARCH64,
+        osPreset = preset,
+        cpuModel = if (current.cpuModel in GuestArchitecture.AARCH64.cpuModelOptions) current.cpuModel else "max",
+        machineType = if (current.machineType.supportedArch == GuestArchitecture.AARCH64) current.machineType else MachineType.VIRT,
+        displayDevice = if (current.displayDevice.isSupportedOn(GuestArchitecture.AARCH64)) current.displayDevice else DisplayDevice.VIRTIO_GPU_PCI,
+        usbXhciEnabled = true,
+        usbTabletEnabled = true
+    )
 }
 
 private fun queryUriName(context: android.content.Context, uri: Uri): String? {
