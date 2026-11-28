@@ -1,5 +1,6 @@
 package com.qemusdl.app
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -124,11 +125,21 @@ fun MainNavigation(
     val useTwoPaneListDetail = !adaptiveInfo.isPhone && contentWidthDp >= 640
 
     val windowAdaptiveInfo = currentWindowAdaptiveInfoV2()
-    val paneDirective = remember(windowAdaptiveInfo, useTwoPaneListDetail) {
+    val hasVerticalHinge = remember(windowAdaptiveInfo) {
+        windowAdaptiveInfo.windowPosture.hingeList.any { hinge ->
+            hinge.isVertical && (hinge.isSeparating || !hinge.isFlat)
+        }
+    }
+    val paneDirective = remember(windowAdaptiveInfo, useTwoPaneListDetail, hasVerticalHinge) {
         val base = calculatePaneScaffoldDirective(windowAdaptiveInfo)
+        val partitionSpacer = when {
+            !useTwoPaneListDetail -> 0.dp
+            hasVerticalHinge -> maxOf(base.horizontalPartitionSpacerSize, 20.dp)
+            else -> base.horizontalPartitionSpacerSize.coerceIn(1.dp, 12.dp)
+        }
         base.copy(
             maxHorizontalPartitions = if (useTwoPaneListDetail) 2 else 1,
-            horizontalPartitionSpacerSize = if (useTwoPaneListDetail) 1.dp else 0.dp
+            horizontalPartitionSpacerSize = partitionSpacer
         )
     }
     val listDetailStrategy = rememberListDetailSceneStrategy<NavKey>(directive = paneDirective)
@@ -141,11 +152,18 @@ fun MainNavigation(
         else -> TopLevelSection.VMS
     }
 
-    fun launchVm(vm: VmConfig) {
+    fun launchVm(vm: VmConfig, launchAdjacent: Boolean = false) {
         val intent = if (runtimeStatus.isReadyForArch(vm.architecture)) {
-            QemuSdlActivity.createIntent(context, vm)
+            QemuSdlActivity.createIntent(context, vm, launchAdjacent = launchAdjacent)
         } else {
-            VmViewportActivity.createIntent(context, vm.id)
+            VmViewportActivity.createIntent(context, vm.id).apply {
+                if (launchAdjacent) {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or
+                            Intent.FLAG_ACTIVITY_NEW_TASK
+                    )
+                }
+            }
         }
         context.startActivity(intent)
     }
@@ -195,6 +213,7 @@ fun MainNavigation(
                                     formFactor = adaptiveInfo.formFactor,
                                     onCreateVm = { openDetailKey(VmEditorKey(vmId = null)) },
                                     onBootVm = { vm -> launchVm(vm) },
+                                    onBootSideBySide = { vm -> launchVm(vm, launchAdjacent = true) },
                                     onEditVm = { vmId ->
                                         selectedVmId = vmId
                                         openDetailKey(VmEditorKey(vmId = vmId))
@@ -226,6 +245,9 @@ fun MainNavigation(
                             openDetailKey(VmSetupKey(vmId = vmId))
                         },
                         onBootVm = { vm -> launchVm(vm) },
+                        onBootVmSideBySide = if (adaptiveInfo.isPhone) null else { vm ->
+                            launchVm(vm, launchAdjacent = true)
+                        },
                         onOpenIsoDownloader = {
                             if (adaptiveInfo.isPhone) {
                                 backStack.add(IsoDownloaderKey(targetVmId = null))

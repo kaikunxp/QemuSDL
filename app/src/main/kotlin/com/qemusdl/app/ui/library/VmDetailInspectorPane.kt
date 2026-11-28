@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.ViewWeek
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
@@ -78,6 +79,7 @@ fun VmDetailInspectorPane(
     formFactor: AppFormFactor,
     onCreateVm: () -> Unit,
     onBootVm: (VmConfig) -> Unit,
+    onBootSideBySide: ((VmConfig) -> Unit)? = null,
     onEditVm: (String) -> Unit,
     onRunSetup: (String) -> Unit,
     onCloneVm: (String) -> Unit,
@@ -215,6 +217,19 @@ fun VmDetailInspectorPane(
                             Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
                             Text("Configure Hardware")
+                        }
+
+                        if (onBootSideBySide != null) {
+                            AppTooltipBox(tooltip = "Launch VM side-by-side in split-screen") {
+                                OutlinedButton(
+                                    onClick = { onBootSideBySide(vm) },
+                                    modifier = Modifier.desktopHandCursor()
+                                ) {
+                                    Icon(Icons.Rounded.ViewWeek, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Side-by-Side")
+                                }
+                            }
                         }
 
                         if (!vm.needsFirstTimeSetup) {

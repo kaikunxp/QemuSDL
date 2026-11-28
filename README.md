@@ -4,7 +4,8 @@
   <p><strong>Android x86_64, AArch64 &amp; PowerPC QEMU VM Runner with Native SDL2 Viewport</strong></p>
   <p>
     <img src="https://img.shields.io/badge/Vibe_Coded-100%25_AI_Generated-8A2BE2?style=for-the-badge" alt="Vibe Coded" />
-    <img src="https://img.shields.io/badge/Android-API_31--36-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Platform" />
+    <img src="https://img.shields.io/badge/Version-1.3.0-2E7D32?style=for-the-badge" alt="Version 1.3.0" />
+    <img src="https://img.shields.io/badge/Android-API_31--37-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Platform" />
     <img src="https://img.shields.io/badge/QEMU-x86__64_%7C_AArch64_%7C_PPC-FF6600?style=for-the-badge" alt="Architectures" />
     <img src="https://img.shields.io/badge/Display-Native_SDL2_%2B_GLES3-00B4D8?style=for-the-badge" alt="Renderer" />
     <img src="https://img.shields.io/badge/Jetpack_Compose-Material_3_Expressive-6750A4?style=for-the-badge" alt="UI" />
@@ -52,21 +53,37 @@ All three QEMU SoftMMU targets (`arm64-v8a`), `libSDL2.so`, `libusb-1.0.so`, and
 
 ## Screenshots
 
+### Foldable Tabletop "Mini-Laptop" Mode (Classic Mac OS 9.2.1 · PowerPC G4)
+
+<p align="center">
+  <img src="docs/screenshots/10-macos9-tabletop-laptop-mode.png" alt="Classic Mac OS 9.2.1 running in Foldable Tabletop Mini-Laptop Mode" width="640" />
+</p>
+
+### Adaptive Foldable &amp; Tablet Two-Pane Workspace
+
+| Unfolded 2-Pane VM Library &amp; Inspector | Home Screen Shortcuts, Launch Intents &amp; Side-by-Side |
+| :---: | :---: |
+| <img src="docs/screenshots/08-foldable-two-pane-library.png" alt="Unfolded Foldable 2-Pane VM Library and Inspector" width="420" /> | <img src="docs/screenshots/09-vm-shortcuts-actions-sheet.png" alt="VM Long-Press Actions Sheet with Shortcuts and Side-by-Side Launch" width="420" /> |
+
 ### Live Native SDL2 Guest Viewport (Debian x86_64 Installer)
 
-| Interactive Floating HUD & Trackpad Controls | Clean Distraction-Free SDL2 Viewport |
+| Interactive Floating HUD &amp; Trackpad Controls | Clean Distraction-Free SDL2 Viewport |
 | :---: | :---: |
 | ![Debian x86_64 SDL2 Viewport with Floating HUD](docs/screenshots/02-debian-sdl2-viewport-hud.png) | ![Debian x86_64 SDL2 Viewport Clean](docs/screenshots/03-debian-sdl2-viewport-clean.png) |
 
-### Material 3 Expressive VM Library, ISO Downloader & Configurator
+### Phone UI, Multi-Arch ISO Downloader &amp; VM Configurator
 
-| VM Library Dashboard | Built-in Multi-Arch ISO Downloader |
+| Phone VM Library Dashboard (Multi-Arch) | Built-in Multi-Arch ISO Downloader |
 | :---: | :---: |
-| <img src="docs/screenshots/01-vm-library-dashboard.png" alt="VM Library Dashboard" width="320" /> | <img src="docs/screenshots/04-iso-downloader.png" alt="Multi-Arch ISO Downloader" width="320" /> |
+| <img src="docs/screenshots/01-vm-library-dashboard.png" alt="Phone VM Library Dashboard" width="280" /> | <img src="docs/screenshots/04-iso-downloader.png" alt="Multi-Arch ISO Downloader" width="280" /> |
 
-| SDL2 Viewport, Scaling & Mouse Emulation | Storage, QCOW2 & Boot Media | Networking, Audio & Live QEMU CLI |
-| :---: | :---: | :---: |
-| <img src="docs/screenshots/05-vm-config-display-mouse.png" alt="SDL2 Viewport & Mouse Emulation" width="260" /> | <img src="docs/screenshots/06-vm-config-storage-boot.png" alt="Storage & Boot Media" width="260" /> | <img src="docs/screenshots/07-vm-config-peripherals-cli.png" alt="Peripherals & Live QEMU CLI Preview" width="260" /> |
+| Architecture, OS Presets &amp; Compute | SDL2 Viewport, Venus 3D &amp; Mouse Emulation |
+| :---: | :---: |
+| <img src="docs/screenshots/11-vm-config-arch-compute.png" alt="Multi-Arch VM Architecture, OS Presets and Compute" width="280" /> | <img src="docs/screenshots/05-vm-config-display-mouse.png" alt="SDL2 Viewport, Venus 3D GPU and Mouse Emulation" width="280" /> |
+
+| Storage, QCOW2 &amp; Boot Media | USB OTG Passthrough, Networking &amp; Audio |
+| :---: | :---: |
+| <img src="docs/screenshots/06-vm-config-storage-boot.png" alt="Storage, QCOW2 and Boot Media" width="280" /> | <img src="docs/screenshots/07-vm-config-peripherals-cli.png" alt="USB Host Passthrough, SLIRP Networking and Audio" width="280" /> |
 
 ---
 
@@ -76,15 +93,20 @@ Traditional Android QEMU frontends spawn QEMU with `-display vnc=127.0.0.1:0` an
 
 - **Zero VNC / TCP serialization overhead** — guest frames stream straight to GPU textures (`glTexSubImage2D` / SDL2 `opengles2` renderer).
 - **Live in-VM Viewport Scaling** — switch between **Fit Aspect** (letter/pillarboxed), **Fill Screen** (stretched), and **1:1 Pixel** (integer centered) on the fly from the floating toolbar or monitor sheet while the VM is running.
-- **Selectable Mouse & Touch Emulation** — choose how touch interacts with the guest pointer in real time while the VM is running:
-  - **Trackpad (Relative)** — drag anywhere on screen for relative cursor motion with adjustable sensitivity, 1-finger tap for Left Click, 2-finger tap for Right Click, and 2-finger drag for Mouse Wheel scroll.
+- **Selectable Mouse, Stylus & Desktop Pointer Support** — choose how touch interacts with the guest pointer in real time while the VM is running, alongside hardware mouse and stylus support:
+  - **Trackpad (Relative)** — drag anywhere on screen for relative cursor motion with adjustable sensitivity, 1-finger tap for Left Click, 2-finger tap for Right Click, and 2-finger drag for Mouse Wheel scroll (with unbounded relative deltas for Classic Mac OS 9 `usb-mouse`/`adb-mouse`).
   - **Direct Touch (Absolute)** — tap or drag directly at the target screen coordinates to move and left-click immediately (paired with `-device usb-tablet`).
   - **Hover & Tap (Absolute)** — slide your finger to hover the guest cursor at the exact finger position without clicking, then tap with 1 finger for Left Click or 2 fingers for Right Click.
+  - **First-Class Stylus Support** — air-hover cursor tracking, precision direct click/drag even while fingers stay in Trackpad mode, and barrel-button native Right-Click (Moto Pen Ultra, S Pen, USI styluses).
+  - **GooglebookOS / Android Desktop Mouse & Pointer Capture** — viewport-mapped physical mouse hover & right-click, `F11` / `Alt+Enter` full-screen toggle, and `Ctrl+Alt+G` Android Pointer Capture for relative-mouse guests.
+- **3-Tier Adaptive UI (Phone, Foldable/Tablet & GooglebookOS Desktop)** — preserves the compact mobile layout on phones, automatically expands to a hinge-aware Navigation Rail + Navigation 3 two-pane List-Detail workspace on unfolded foldables and tablets, and upgrades to a persistent desktop sidebar with keyboard shortcuts (`Ctrl+1/2/3`, `Ctrl+N`, `Ctrl+S`, `Ctrl+R`, `F11`, `Ctrl+Alt+G`, `Ctrl+Alt+P`), tooltips, and hover cursors on GooglebookOS / Android Desktop.
+- **Foldable Superpowers** — **Tabletop "Mini-Laptop" Mode** (half-folding horizontally pins the live VM display above the crease and opens a multi-touch glass trackpad, hold-to-drag mouse buttons, and modifier/function key deck below), **Letterbox-Aware HUD Dock** (tucks controls into the unused black bar on square inner screens so zero guest pixels are covered), **Picture-in-Picture (PiP)** for running VMs, and one-tap **Side-by-Side** split-screen launch (`FLAG_ACTIVITY_LAUNCH_ADJACENT`).
+- **Home Screen VM Shortcuts & Exported Launch Intents** — long-press any VM (or use the VM Inspector) to pin a launcher shortcut directly to your home screen, or trigger VMs from custom launchers, Tasker, or ADB via `qemusdl://launch/<vmId>` / `com.qemusdl.app.action.LAUNCH_VM`.
 - **Direct USB OTG Host Passthrough (UsbManager + libusb)** — plug in physical USB flash drives, serial adapters, mice, keyboards, or webcams via USB-C OTG and pass them directly into the guest via Android's unprivileged `UsbDeviceConnection.getFileDescriptor()` wrapped by `libusb` / QEMU `usb-host`.
 - **High-Speed xHCI USB 3.0 & Classic Mac USB/ADB Emulation** — modern `-device qemu-xhci,id=xhci` controller for x86_64/AArch64 guests alongside PMU USB / ADB input support for Classic Mac OS 9 & Mac OS X on PowerPC.
-- **Native HID Keyboard & Special Keys HUD** — hardware keyboards, Android IME soft keyboards, sticky `Ctrl`/`Alt` modifiers, function keys (`F1`–`F12`), arrow keys, and `Ctrl+Alt+Del` translate directly to SDL2 scancodes (`SDL_Scancode`).
+- **Native HID Keyboard & Special Keys HUD** — hardware keyboards, Android IME soft keyboards, sticky `Ctrl`/`Alt`/`Cmd` modifiers, function keys (`F1`–`F12`), arrow keys, and `Ctrl+Alt+Del` translate directly to SDL2 scancodes (`SDL_Scancode`).
 - **Built-in First-Time Setup & Sleep-Resilient Multi-Arch ISO Downloader** — guided setup wizard and curated catalog covering x86_64, AArch64, and PowerPC ISOs (Alpine, Debian, Tiny Core, FreeDOS, direct Microsoft Windows 10/11 x64 & ARM64 evaluation ISOs, and Internet Archive Mac OS 9.2.1), plus custom HTTPS `.iso`/`.zip` URLs. Downloads run in a `dataSync` foreground service with partial wake/Wi-Fi locks, HTTP `Range` resume, and automatic retries so large downloads keep running reliably when the screen turns off.
-- **Material 3 Expressive UI** — crafted with `MaterialExpressiveTheme`, `MotionScheme.expressive()`, dynamic wallpaper colors (Android 12+), `HorizontalFloatingToolbar`, `SplitButtonLayout`, `LoadingIndicator`, and adaptive phone/tablet grids.
+- **Material 3 Expressive UI** — crafted with `MaterialExpressiveTheme`, `MotionScheme.expressive()`, dynamic wallpaper colors (Android 12+), `HorizontalFloatingToolbar`, `SplitButtonLayout`, `LoadingIndicator`, and Material 3 Adaptive Navigation 3 panes.
 
 ---
 
@@ -204,6 +226,9 @@ While a virtual machine is running in either the full native `QemuSdlActivity` (
 | **Viewport Scaling Mode** | `Fit Aspect` / `Fill Screen` / `1:1 Pixel` | Resize and scale the active SDL2 / OpenGL ES surface immediately via the aspect-ratio toolbar button or monitor sheet. |
 | **Special Keys Bar** | `Ctrl`, `Alt`, `Esc`, `Tab`, `Super`, `↑↓←→`, `F1`–`F12`, `Ctrl+Alt+Del` | Expandable pill bar above the floating toolbar for sending modifier combinations and BIOS/OpenBIOS/UEFI hotkeys. |
 | **Soft Keyboard** | Android IME | Summons the system soft keyboard and streams typed characters directly as SDL2 key events. |
+| **Picture-in-Picture (PiP)** | Toolbar / `Ctrl+Alt+P` | Shrinks the running VM into a clean floating live thumbnail while you use other apps or download ISOs, then tap to return full-screen. |
+| **Tabletop Mini-Laptop Mode** | Half-fold horizontally | Automatically pins the guest display above the crease and opens a dedicated glass trackpad, hold-to-drag mouse buttons, and modifier/function key deck below. |
+| **Pointer Capture & Full Screen** | `Ctrl+Alt+G` / `F11` | Locks a physical laptop mouse for relative-pointer guests (such as Classic Mac OS 9) and toggles true full-screen on GooglebookOS / Android Desktop. |
 
 ---
 
@@ -217,19 +242,20 @@ While a virtual machine is running in either the full native `QemuSdlActivity` (
 │   │   ├── CMakeLists.txt             # NDK C++20 (-O3 in release) build for libqemusdl_bridge.so
 │   │   ├── qemu_sdl_bridge.cpp        # JNI runtime prober, ELF inspector & multi-arch bridge lifecycle
 │   │   └── sdl_viewport_renderer.*    # 60 Hz EGL / OpenGL ES 3.0 interactive fallback viewport
-│   ├── java/org/libsdl/app/           # SDL2 Android Java bindings with custom scaling & mouse modes
+│   ├── java/org/libsdl/app/           # SDL2 Android Java bindings with scaling, mouse, stylus & pointer capture
 │   ├── jniLibs/arm64-v8a/             # Bundled -O3 stripped libSDL2.so, libusb-1.0.so & libqemu-system-{x86_64,aarch64,ppc}.so
 │   └── kotlin/com/qemusdl/app/
 │       ├── data/                      # GuestArchitecture, VmConfig, SdlScalingMode, MouseEmulationMode, VmRepository
 │       ├── qemu/                      # QemuCommandBuilder (-display sdl), IsoDownloader, IsoDownloadForegroundService, DiskImageCreator
 │       ├── sdl/                       # NativeQemuBridge, SdlSurfaceView, SdlScancodeMapper
 │       └── ui/
+│           ├── adaptive/              # 3-tier form factor resolver (Phone / Foldable-Tablet / GooglebookOS Desktop), tooltips & hover cursors
 │           ├── editor/                # Multi-arch hardware, firmware, display & mouse emulation configurator
 │           ├── isos/                  # Curated x86_64, AArch64 & PowerPC ISO catalog & sleep-safe downloader
-│           ├── library/               # Material 3 Expressive dashboard with SplitButtonLayout
+│           ├── library/               # Material 3 Expressive dashboard, 2-pane VM Inspector & pinned shortcut manager
 │           ├── runtime/               # Native .so inspector, SAF importer & virtual disk manager
 │           ├── setup/                 # Guided first-time VM setup wizard
-│           └── viewport/              # QemuSdlActivity & VmViewportScreen with live HUD controls
+│           └── viewport/              # QemuSdlActivity, TabletopLaptopDeck, FoldableViewportHelper, VmLauncherActivity & VmViewportScreen
 └── scripts/
     └── build-sdl2-qemu-android.sh     # Automated -O3 NDK cross-compiler for SDL2, libusb, GLib, Pixman, Slirp & QEMU (x86_64/aarch64/ppc)
 ```

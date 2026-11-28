@@ -62,11 +62,16 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     private boolean mRelativeGuestPointer = false;
     private float mRelAccumX = 0f;
     private float mRelAccumY = 0f;
-    // True when a physical mouse/trackpad is actively driving the cursor (hides redundant virtual touch cursor)
+    // True when a physical mouse/trackpad or stylus is actively driving the cursor (hides redundant virtual touch cursor)
     private boolean mHardwareMouseActive = false;
     private boolean mPointerCaptured = false;
     private boolean mSyncTickerActive = false;
     private boolean mInitialMouseSeeded = false;
+    // Stylus hover & drag state (Moto Pen Ultra, S Pen, USI styluses)
+    private float mLastStylusX = 0f;
+    private float mLastStylusY = 0f;
+    private boolean mHasStylusHoverPos = false;
+    private int mStylusActiveButton = 0;
 
     public void setRelativeGuestPointer(boolean relativeGuest) {
         mRelativeGuestPointer = relativeGuest;
@@ -187,7 +192,21 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         void onCursorUpdated(float screenX, float screenY, boolean visible, boolean leftDown, boolean rightDown);
     }
 
+    public interface ViewportBoundsListener {
+        void onViewportBoundsUpdated(
+                float leftPx,
+                float topPx,
+                float rightPx,
+                float bottomPx,
+                float surfaceWidthPx,
+                float surfaceHeightPx,
+                int guestWidth,
+                int guestHeight
+        );
+    }
+
     private CursorListener mCursorListener;
+    private ViewportBoundsListener mViewportBoundsListener;
     private boolean mLeftButtonDown = false;
     private boolean mRightButtonDown = false;
 
@@ -221,6 +240,215 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     public void setCursorListener(CursorListener listener) {
         mCursorListener = listener;
         notifyCursorChanged();
+    }
+
+    public void setViewportBoundsListener(ViewportBoundsListener listener) {
+        mViewportBoundsListener = listener;
+        notifyViewportBoundsChanged();
+    }
+
+    private void notifyViewportBoundsChanged() {
+        if (mViewportBoundsListener == null) {
+            return;
+        }
+        float surfW = Math.max(1f, mWidth > 1f ? mWidth : (float) getWidth());
+        float surfH = Math.max(1f, mHeight > 1f ? mHeight : (float) getHeight());
+        float[] vp = new float[4];
+        computeSdlInnerViewport(vp);
+        float centerX = surfW * 0.5f;
+        float centerY = surfH * 0.5f;
+        float sx = getScaleX();
+        float sy = getScaleY();
+        float visualLeft = Math.max(0f, centerX + (vp[0] - centerX) * sx);
+        float visualTop = Math.max(0f, centerY + (vp[1] - centerY) * sy);
+        float visualRight = Math.min(surfW, centerX + ((vp[0] + vp[2]) - centerX) * sx);
+        float visualBottom = Math.min(surfH, centerY + ((vp[1] + vp[3]) - centerY) * sy);
+        mViewportBoundsListener.onViewportBoundsUpdated(
+                visualLeft,
+                visualTop,
+                visualRight,
+                visualBottom,
+                surfW,
+                surfH,
+                mGuestWidth,
+                mGuestHeight
+        );
+    }
+
+    private int activeVirtualButtonMask() {
+        int mask = 0;
+        if (mLeftButtonDown) mask |= MotionEvent.BUTTON_PRIMARY;
+        if (mRightButtonDown) mask |= MotionEvent.BUTTON_SECONDARY;
+        return mask;
+    }
+
+    /**
+     * Drives the guest pointer from an external trackpad surface (e.g. Tabletop Mini-Laptop Deck).
+     * Respects any currently held virtual mouse button for smooth click-and-drag across both
+     * absolute (usb-tablet) and relative (Mac OS 9 / PS/2) guests.
+     */
+    public void dispatchTrackpadDelta(float rawDx, float rawDy) {
+        if (mHardwareMouseActive && !mPointerCaptured) {
+            mHardwareMouseActive = false;
+        }
+        float scaledDx = rawDx * mTrackpadSensitivity;
+        float scaledDy = rawDy * mTrackpadSensitivity;
+        int btnMask = activeVirtualButtonMask();
+        int action = (btnMask != 0) ? MotionEvent.ACTION_MOVE : MotionEvent.ACTION_HOVER_MOVE;
+
+        if (mRelativeGuestPointer) {
+            mRelAccumX += scaledDx;
+            mRelAccumY += scaledDy;
+            int intDx = (int) mRelAccumX;
+            int intDy = (int) mRelAccumY;
+            mRelAccumX -= intDx;
+            mRelAccumY -= intDy;
+            if (intDx != 0 || intDy != 0) {
+                SDLActivity.onNativeMouse(btnMask, action, intDx, intDy, true);
+            }
+            return;
+        }
+
+        float[] vp = new float[4];
+        computeSdlInnerViewport(vp);
+        float vpX = vp[0];
+        float vpY = vp[1];
+        float vpW = Math.max(1f, vp[2]);
+        float vpH = Math.max(1f, vp[3]);
+        mCursorNormX = clampNorm(mCursorNormX + (scaledDx / vpW));
+        mCursorNormY = clampNorm(mCursorNormY + (scaledDy / vpH));
+        float sdlX = vpX + mCursorNormX * vpW;
+        float sdlY = vpY + mCursorNormY * vpH;
+        notifyCursorChanged();
+        SDLActivity.onNativeMouse(btnMask, action, sdlX, sdlY, false);
+    }
+
+    /**
+     * Dispatches 2-finger scroll from an external trackpad surface (e.g. Tabletop Mini-Laptop Deck).
+     */
+    public void dispatchTrackpadScroll(float dx, float dy) {
+        SDLActivity.onNativeMouse(0, MotionEvent.ACTION_SCROLL, dx * 0.05f, -dy * 0.05f, false);
+    }
+
+    /**
+     * Press or release a virtual mouse button (supports hold-to-drag on Tabletop trackpad buttons).
+     */
+    public void setVirtualMouseButton(boolean rightClick, boolean pressed) {
+        if (rightClick) {
+            if (mRightButtonDown == pressed) return;
+            mRightButtonDown = pressed;
+        } else {
+            if (mLeftButtonDown == pressed) return;
+            mLeftButtonDown = pressed;
+        }
+        notifyCursorChanged();
+        int btnMask = activeVirtualButtonMask();
+        int action = pressed ? MotionEvent.ACTION_DOWN : MotionEvent.ACTION_UP;
+        if (mRelativeGuestPointer) {
+            SDLActivity.onNativeMouse(btnMask, action, 0f, 0f, true);
+            return;
+        }
+        float[] vp = new float[4];
+        computeSdlInnerViewport(vp);
+        float clickX = vp[0] + mCursorNormX * vp[2];
+        float clickY = vp[1] + mCursorNormY * vp[3];
+        if (pressed) {
+            SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, clickX, clickY, false);
+        }
+        SDLActivity.onNativeMouse(btnMask, action, clickX, clickY, false);
+    }
+
+    /**
+     * Returns true when a MotionEvent originates from a stylus / eraser (e.g. Moto Pen Ultra, S Pen).
+     */
+    static boolean isStylusEvent(MotionEvent event) {
+        int count = event.getPointerCount();
+        if (count > 0) {
+            int idx = Math.max(0, Math.min(event.getActionIndex(), count - 1));
+            int tool = event.getToolType(idx);
+            if (tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER) {
+                return true;
+            }
+        }
+        return event.isFromSource(InputDevice.SOURCE_STYLUS) &&
+                (count == 0 || event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER);
+    }
+
+    /**
+     * Handles stylus air-hover movement and stylus barrel-button clicks (mapped to right-click).
+     */
+    boolean handleStylusHover(MotionEvent event) {
+        int action = event.getActionMasked();
+        float rawX = event.getX(0);
+        float rawY = event.getY(0);
+
+        if (!mHardwareMouseActive) {
+            mHardwareMouseActive = true;
+            notifyCursorChanged();
+        }
+
+        if (action == MotionEvent.ACTION_HOVER_EXIT) {
+            mHasStylusHoverPos = false;
+            return true;
+        }
+
+        if (action == MotionEvent.ACTION_HOVER_ENTER) {
+            mLastStylusX = rawX;
+            mLastStylusY = rawY;
+            mHasStylusHoverPos = true;
+            if (!mRelativeGuestPointer) {
+                float[] mapped = mapPhysicalMouseToViewport(rawX, rawY);
+                SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, mapped[0], mapped[1], false);
+            }
+            return true;
+        }
+
+        if (action == MotionEvent.ACTION_HOVER_MOVE) {
+            if (mRelativeGuestPointer) {
+                if (mHasStylusHoverPos) {
+                    float dx = (rawX - mLastStylusX) * mTrackpadSensitivity;
+                    float dy = (rawY - mLastStylusY) * mTrackpadSensitivity;
+                    mRelAccumX += dx;
+                    mRelAccumY += dy;
+                    int intDx = (int) mRelAccumX;
+                    int intDy = (int) mRelAccumY;
+                    mRelAccumX -= intDx;
+                    mRelAccumY -= intDy;
+                    if (intDx != 0 || intDy != 0) {
+                        SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, intDx, intDy, true);
+                    }
+                }
+                mLastStylusX = rawX;
+                mLastStylusY = rawY;
+                mHasStylusHoverPos = true;
+            } else {
+                float[] mapped = mapPhysicalMouseToViewport(rawX, rawY);
+                SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, mapped[0], mapped[1], false);
+            }
+            return true;
+        }
+
+        if (action == MotionEvent.ACTION_BUTTON_PRESS || action == MotionEvent.ACTION_BUTTON_RELEASE) {
+            boolean barrelRight = (event.getButtonState() &
+                    (MotionEvent.BUTTON_STYLUS_PRIMARY | MotionEvent.BUTTON_SECONDARY)) != 0;
+            int btn = (action == MotionEvent.ACTION_BUTTON_PRESS)
+                    ? (barrelRight ? MotionEvent.BUTTON_SECONDARY : MotionEvent.BUTTON_PRIMARY)
+                    : 0;
+            int sdlAction = (action == MotionEvent.ACTION_BUTTON_PRESS)
+                    ? MotionEvent.ACTION_DOWN
+                    : MotionEvent.ACTION_UP;
+            if (mRelativeGuestPointer) {
+                SDLActivity.onNativeMouse(btn, sdlAction, 0f, 0f, true);
+            } else {
+                float[] mapped = mapPhysicalMouseToViewport(rawX, rawY);
+                if (sdlAction == MotionEvent.ACTION_DOWN) {
+                    SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, mapped[0], mapped[1], false);
+                }
+                SDLActivity.onNativeMouse(btn, sdlAction, mapped[0], mapped[1], false);
+            }
+            return true;
+        }
+        return false;
     }
 
     private void notifyCursorChanged() {
@@ -408,6 +636,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             setScaleY(1.0f);
         }
         notifyCursorChanged();
+        notifyViewportBoundsChanged();
     }
 
     // Startup
@@ -677,6 +906,77 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
                 sdlAction = MotionEvent.ACTION_UP;
             }
             SDLActivity.onNativeMouse(mouseButton, sdlAction, x, y, rel);
+            return true;
+        }
+
+        // First-class Stylus handling (Moto Pen Ultra, S Pen, USI pen):
+        // Always acts as a precision direct pointer even when finger touch is set to Trackpad mode,
+        // and maps the stylus barrel button (BUTTON_STYLUS_PRIMARY) to native Right-Click.
+        if (isStylusEvent(event)) {
+            if (!mHardwareMouseActive) {
+                mHardwareMouseActive = true;
+                notifyCursorChanged();
+            }
+            boolean barrelRight = (event.getButtonState() &
+                    (MotionEvent.BUTTON_STYLUS_PRIMARY | MotionEvent.BUTTON_SECONDARY)) != 0;
+            float rawX = event.getX(0);
+            float rawY = event.getY(0);
+
+            if (mRelativeGuestPointer) {
+                switch (action) {
+                    case MotionEvent.ACTION_DOWN:
+                        mLastStylusX = rawX;
+                        mLastStylusY = rawY;
+                        mRelAccumX = 0f;
+                        mRelAccumY = 0f;
+                        mStylusActiveButton = barrelRight ? MotionEvent.BUTTON_SECONDARY : MotionEvent.BUTTON_PRIMARY;
+                        SDLActivity.onNativeMouse(mStylusActiveButton, MotionEvent.ACTION_DOWN, 0f, 0f, true);
+                        break;
+                    case MotionEvent.ACTION_MOVE: {
+                        float dx = (rawX - mLastStylusX) * mTrackpadSensitivity;
+                        float dy = (rawY - mLastStylusY) * mTrackpadSensitivity;
+                        mLastStylusX = rawX;
+                        mLastStylusY = rawY;
+                        mRelAccumX += dx;
+                        mRelAccumY += dy;
+                        int intDx = (int) mRelAccumX;
+                        int intDy = (int) mRelAccumY;
+                        mRelAccumX -= intDx;
+                        mRelAccumY -= intDy;
+                        if (intDx != 0 || intDy != 0) {
+                            SDLActivity.onNativeMouse(mStylusActiveButton, MotionEvent.ACTION_MOVE, intDx, intDy, true);
+                        }
+                        break;
+                    }
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        mStylusActiveButton = 0;
+                        SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, 0f, 0f, true);
+                        break;
+                    default:
+                        break;
+                }
+                return true;
+            }
+
+            float[] mapped = mapPhysicalMouseToViewport(rawX, rawY);
+            switch (action) {
+                case MotionEvent.ACTION_DOWN:
+                    mStylusActiveButton = barrelRight ? MotionEvent.BUTTON_SECONDARY : MotionEvent.BUTTON_PRIMARY;
+                    SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, mapped[0], mapped[1], false);
+                    SDLActivity.onNativeMouse(mStylusActiveButton, MotionEvent.ACTION_DOWN, mapped[0], mapped[1], false);
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    SDLActivity.onNativeMouse(mStylusActiveButton, MotionEvent.ACTION_MOVE, mapped[0], mapped[1], false);
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    mStylusActiveButton = 0;
+                    SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, mapped[0], mapped[1], false);
+                    break;
+                default:
+                    break;
+            }
             return true;
         }
 

@@ -1,6 +1,7 @@
 package com.qemusdl.app.ui.viewport
 
 import android.app.ActivityManager
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardCommandKey
 import androidx.compose.material.icons.rounded.Mouse
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.TouchApp
@@ -95,9 +97,14 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.window.layout.WindowInfoTracker
+import androidx.window.layout.WindowLayoutInfo
 import com.qemusdl.app.data.MouseEmulationMode
 import com.qemusdl.app.data.SdlScalingMode
 import com.qemusdl.app.data.VmConfig
@@ -136,6 +143,11 @@ class QemuSdlActivity : SDLActivity() {
     private var firmwareDirPath: String? = null
     private var cursorUiState by mutableStateOf(VirtualCursorUiState())
     private var windowingState by mutableStateOf(WindowingEnvironmentState())
+    private var viewportPosture by mutableStateOf(ViewportPostureState())
+    private var viewportBounds by mutableStateOf(ViewportBoundsState())
+    private var isInPipMode by mutableStateOf(false)
+    private var lastWindowLayoutInfo: WindowLayoutInfo? = null
+    private var appliedTabletopHeightPx: Int = -1
     private var pointerCaptured by mutableStateOf(false)
     private var hasEverDetectedWindowed = false
 
@@ -285,6 +297,48 @@ class QemuSdlActivity : SDLActivity() {
                 )
             }
         }
+        mSurface?.setViewportBoundsListener { left, top, right, bottom, surfW, surfH, guestW, guestH ->
+            runOnUiThread {
+                val prevGuestW = viewportBounds.guestWidth
+                val prevGuestH = viewportBounds.guestHeight
+                viewportBounds = ViewportBoundsState(
+                    leftPx = left,
+                    topPx = top,
+                    rightPx = right,
+                    bottomPx = bottom,
+                    surfaceWidthPx = surfW,
+                    surfaceHeightPx = surfH,
+                    guestWidth = guestW,
+                    guestHeight = guestH
+                )
+                if (guestW != prevGuestW || guestH != prevGuestH) {
+                    updatePipParams(guestW, guestH)
+                }
+            }
+        }
+
+        updatePipParams(vmConfig.resolution.width, vmConfig.resolution.height)
+
+        // Observe foldable posture (Tabletop half-folded horizontal hinge) via Jetpack WindowManager
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                WindowInfoTracker.getOrCreate(this@QemuSdlActivity)
+                    .windowLayoutInfo(this@QemuSdlActivity)
+                    .collect { layoutInfo ->
+                        lastWindowLayoutInfo = layoutInfo
+                        val windowHeightPx = mLayout?.height?.takeIf { it > 0 }
+                            ?: resources.displayMetrics.heightPixels
+                        val resolved = FoldableViewportHelper.resolveTabletopPosture(
+                            layoutInfo = layoutInfo,
+                            windowHeightPx = windowHeightPx
+                        )
+                        if (resolved != viewportPosture) {
+                            viewportPosture = resolved
+                            updateSurfaceLayoutForPosture()
+                        }
+                    }
+            }
+        }
 
         val repository = VmRepository.getInstance(this)
 
@@ -297,6 +351,13 @@ class QemuSdlActivity : SDLActivity() {
                 val oldH = oldBottom - oldTop
                 if (newW > 0 && newH > 0 && (newW != oldW || newH != oldH)) {
                     refreshWindowingState()
+                    lastWindowLayoutInfo?.let { info ->
+                        val resolved = FoldableViewportHelper.resolveTabletopPosture(info, newH)
+                        if (resolved != viewportPosture) {
+                            viewportPosture = resolved
+                            updateSurfaceLayoutForPosture()
+                        }
+                    }
                     mSurface?.post { mSurface?.requestViewportRescale() }
                 }
             }
@@ -306,6 +367,9 @@ class QemuSdlActivity : SDLActivity() {
                         QemuSdlOverlayHud(
                             vmConfig = vmConfig,
                             cursorState = cursorUiState,
+                            viewportPosture = viewportPosture,
+                            viewportBounds = viewportBounds,
+                            isInPipMode = isInPipMode,
                             qemuCommandLine = qemuFullArgs.joinToString(" "),
                             firmwarePath = firmwareDirPath ?: "Not bundled",
                             showFullscreenButton = windowingState.showFullscreenButton,
@@ -314,6 +378,7 @@ class QemuSdlActivity : SDLActivity() {
                             isPointerCaptured = pointerCaptured,
                             onToggleFullscreen = { toggleFullscreen() },
                             onTogglePointerCapture = { mSurface?.togglePointerCapture() },
+                            onEnterPip = { enterVmPictureInPicture() },
                             onScalingModeChanged = { newScale ->
                                 vmConfig = vmConfig.copy(scalingMode = newScale)
                                 mSurface?.setScalingMode(newScale.nativeCode)
@@ -327,8 +392,17 @@ class QemuSdlActivity : SDLActivity() {
                             onTrackpadSensitivityChanged = { sensitivity ->
                                 mSurface?.setTrackpadSensitivity(sensitivity)
                             },
+                            onTrackpadDelta = { dx, dy ->
+                                mSurface?.dispatchTrackpadDelta(dx, dy)
+                            },
+                            onTrackpadScroll = { dx, dy ->
+                                mSurface?.dispatchTrackpadScroll(dx, dy)
+                            },
                             onPerformClick = { rightClick ->
                                 mSurface?.performVirtualClick(rightClick)
+                            },
+                            onVirtualMouseButton = { rightClick, pressed ->
+                                mSurface?.setVirtualMouseButton(rightClick, pressed)
                             },
                             onShowKeyboard = {
                                 SDLActivity.showTextInput(0, 0, 1, 1)
@@ -374,6 +448,11 @@ class QemuSdlActivity : SDLActivity() {
                 mSurface?.togglePointerCapture()
                 return true
             }
+            // Ctrl+Alt+P enters Picture-in-Picture mode for the running VM
+            if (event.isCtrlPressed && event.isAltPressed && event.keyCode == KeyEvent.KEYCODE_P) {
+                enterVmPictureInPicture()
+                return true
+            }
         }
         return super.dispatchKeyEvent(event)
     }
@@ -392,10 +471,69 @@ class QemuSdlActivity : SDLActivity() {
                     "Toggle Mouse Pointer Capture",
                     KeyEvent.KEYCODE_G,
                     KeyEvent.META_CTRL_ON or KeyEvent.META_ALT_ON
+                ),
+                KeyboardShortcutInfo(
+                    "Enter Picture-in-Picture",
+                    KeyEvent.KEYCODE_P,
+                    KeyEvent.META_CTRL_ON or KeyEvent.META_ALT_ON
                 )
             )
         )
         data?.add(vmViewportShortcuts)
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInPipMode = isInPictureInPictureMode
+        updateSurfaceLayoutForPosture()
+        mSurface?.post { mSurface?.requestViewportRescale() }
+    }
+
+    private fun buildPipParams(guestWidth: Int, guestHeight: Int): PictureInPictureParams =
+        PictureInPictureParams.Builder()
+            .setAspectRatio(FoldableViewportHelper.computePipAspectRatio(guestWidth, guestHeight))
+            .setSeamlessResizeEnabled(true)
+            .build()
+
+    private fun updatePipParams(guestWidth: Int, guestHeight: Int) {
+        runCatching {
+            setPictureInPictureParams(buildPipParams(guestWidth, guestHeight))
+        }
+    }
+
+    private fun enterVmPictureInPicture() {
+        if (mSurface?.isPointerCaptureActive == true) {
+            mSurface?.setPointerCapture(false)
+        }
+        val gw = viewportBounds.guestWidth.takeIf { it > 0 } ?: vmConfig.resolution.width
+        val gh = viewportBounds.guestHeight.takeIf { it > 0 } ?: vmConfig.resolution.height
+        runCatching {
+            enterPictureInPictureMode(buildPipParams(gw, gh))
+        }
+    }
+
+    private fun updateSurfaceLayoutForPosture() {
+        val surface = mSurface ?: return
+        val targetHeight = if (viewportPosture.isTabletop && !isInPipMode) {
+            viewportPosture.hingeTopPx.coerceAtLeast(FoldableViewportHelper.MIN_TABLETOP_TOP_PANE_PX)
+        } else {
+            ViewGroup.LayoutParams.MATCH_PARENT
+        }
+        if (targetHeight == appliedTabletopHeightPx) {
+            return
+        }
+        appliedTabletopHeightPx = targetHeight
+        val lp = RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, targetHeight)
+        if (targetHeight == ViewGroup.LayoutParams.MATCH_PARENT) {
+            lp.addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
+        } else {
+            lp.addRule(RelativeLayout.ALIGN_PARENT_TOP, RelativeLayout.TRUE)
+        }
+        surface.layoutParams = lp
+        surface.post { surface.requestViewportRescale() }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -539,9 +677,22 @@ class QemuSdlActivity : SDLActivity() {
         private const val EXTRA_VM_CONFIG_JSON = "extra_vm_config_json"
         private val codec = Json { encodeDefaults = true }
 
-        fun createIntent(context: Context, config: VmConfig): Intent =
+        fun createIntent(
+            context: Context,
+            config: VmConfig,
+            launchAdjacent: Boolean = false
+        ): Intent =
             Intent(context, QemuSdlActivity::class.java)
                 .putExtra(EXTRA_VM_CONFIG_JSON, codec.encodeToString(config))
+                .apply {
+                    if (launchAdjacent) {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                        )
+                    }
+                }
     }
 }
 
@@ -622,6 +773,9 @@ private fun VirtualMouseCursorOverlay(
 private fun QemuSdlOverlayHud(
     vmConfig: VmConfig,
     cursorState: VirtualCursorUiState,
+    viewportPosture: ViewportPostureState,
+    viewportBounds: ViewportBoundsState,
+    isInPipMode: Boolean,
     qemuCommandLine: String,
     firmwarePath: String,
     showFullscreenButton: Boolean,
@@ -630,10 +784,14 @@ private fun QemuSdlOverlayHud(
     isPointerCaptured: Boolean,
     onToggleFullscreen: () -> Unit,
     onTogglePointerCapture: () -> Unit,
+    onEnterPip: () -> Unit,
     onScalingModeChanged: (SdlScalingMode) -> Unit,
     onMouseEmulationModeChanged: (MouseEmulationMode) -> Unit,
     onTrackpadSensitivityChanged: (Float) -> Unit,
+    onTrackpadDelta: (Float, Float) -> Unit,
+    onTrackpadScroll: (Float, Float) -> Unit,
     onPerformClick: (Boolean) -> Unit,
+    onVirtualMouseButton: (rightClick: Boolean, pressed: Boolean) -> Unit,
     onShowKeyboard: () -> Unit,
     onKeyDown: (Int) -> Unit,
     onKeyUp: (Int) -> Unit,
@@ -641,6 +799,11 @@ private fun QemuSdlOverlayHud(
     activeDnsServers: String,
     onPowerOff: () -> Unit
 ) {
+    // Keep Picture-in-Picture thumbnail completely clean with zero overlaid controls
+    if (isInPipMode) {
+        return
+    }
+
     var hudVisible by remember { mutableStateOf(true) }
     var showSpecialKeys by remember { mutableStateOf(false) }
     var showMonitorSheet by remember { mutableStateOf(false) }
@@ -664,6 +827,91 @@ private fun QemuSdlOverlayHud(
         onMouseEmulationModeChanged(mode)
     }
 
+    val density = LocalDensity.current
+    val bottomLetterboxDp = with(density) { viewportBounds.bottomLetterboxPx.toDp().value }
+    val useLetterboxDock = FoldableViewportHelper.shouldUseLetterboxDock(
+        isTabletop = viewportPosture.isTabletop,
+        isInPip = isInPipMode,
+        bottomLetterboxDp = bottomLetterboxDp
+    )
+
+    val specialKeysStripContent: @Composable () -> Unit = {
+        Surface(
+            shape = RoundedCornerShape(100),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f)
+        ) {
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                FilterChip(
+                    selected = stickyCtrl,
+                    onClick = {
+                        stickyCtrl = !stickyCtrl
+                        if (stickyCtrl) onKeyDown(KeyEvent.KEYCODE_CTRL_LEFT)
+                        else onKeyUp(KeyEvent.KEYCODE_CTRL_LEFT)
+                    },
+                    label = { Text("Ctrl") }
+                )
+                FilterChip(
+                    selected = stickyAlt,
+                    onClick = {
+                        stickyAlt = !stickyAlt
+                        if (stickyAlt) onKeyDown(KeyEvent.KEYCODE_ALT_LEFT)
+                        else onKeyUp(KeyEvent.KEYCODE_ALT_LEFT)
+                    },
+                    label = { Text("Alt") }
+                )
+                val quickKeys = listOf(
+                    "Esc" to KeyEvent.KEYCODE_ESCAPE,
+                    "Tab" to KeyEvent.KEYCODE_TAB,
+                    "Enter" to KeyEvent.KEYCODE_ENTER,
+                    "↑" to KeyEvent.KEYCODE_DPAD_UP,
+                    "↓" to KeyEvent.KEYCODE_DPAD_DOWN,
+                    "←" to KeyEvent.KEYCODE_DPAD_LEFT,
+                    "→" to KeyEvent.KEYCODE_DPAD_RIGHT,
+                    "F1" to KeyEvent.KEYCODE_F1,
+                    "F2" to KeyEvent.KEYCODE_F2,
+                    "F8" to KeyEvent.KEYCODE_F8,
+                    "F12" to KeyEvent.KEYCODE_F12
+                )
+                quickKeys.forEach { (label, keyCode) ->
+                    FilterChip(
+                        selected = false,
+                        onClick = {
+                            onKeyDown(keyCode)
+                            onKeyUp(keyCode)
+                            if (stickyCtrl) {
+                                stickyCtrl = false
+                                onKeyUp(KeyEvent.KEYCODE_CTRL_LEFT)
+                            }
+                            if (stickyAlt) {
+                                stickyAlt = false
+                                onKeyUp(KeyEvent.KEYCODE_ALT_LEFT)
+                            }
+                        },
+                        label = { Text(label) }
+                    )
+                }
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        onKeyDown(KeyEvent.KEYCODE_CTRL_LEFT)
+                        onKeyDown(KeyEvent.KEYCODE_ALT_LEFT)
+                        onKeyDown(KeyEvent.KEYCODE_FORWARD_DEL)
+                        onKeyUp(KeyEvent.KEYCODE_FORWARD_DEL)
+                        onKeyUp(KeyEvent.KEYCODE_ALT_LEFT)
+                        onKeyUp(KeyEvent.KEYCODE_CTRL_LEFT)
+                    },
+                    label = { Text("Ctrl+Alt+Del") }
+                )
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         // Touch-transparent virtual mouse cursor overlay rendered directly above SDLSurface
         VirtualMouseCursorOverlay(
@@ -671,80 +919,132 @@ private fun QemuSdlOverlayHud(
             mouseMode = mouseEmulationMode
         )
 
-        // Top-left live native SDL2 pill
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .statusBarsPadding()
-                .padding(12.dp)
-                .clip(RoundedCornerShape(100))
-                .desktopHandCursor()
-                .clickable { hudVisible = !hudVisible },
-            shape = RoundedCornerShape(100),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
-            contentColor = MaterialTheme.colorScheme.onSurface
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        if (viewportPosture.isTabletop) {
+            // Tabletop "Mini-Laptop" Mode: VM runs cleanly above the crease, full control deck below
+            TabletopLaptopDeck(
+                vmConfig = vmConfig,
+                hingeBottomPx = viewportPosture.hingeBottomPx,
+                scalingMode = scalingMode,
+                leftButtonDown = cursorState.leftDown,
+                rightButtonDown = cursorState.rightDown,
+                onSelectScaling = ::selectScaling,
+                onTrackpadDelta = onTrackpadDelta,
+                onTrackpadScroll = onTrackpadScroll,
+                onPerformClick = onPerformClick,
+                onVirtualMouseButton = onVirtualMouseButton,
+                onShowKeyboard = onShowKeyboard,
+                onKeyDown = onKeyDown,
+                onKeyUp = onKeyUp,
+                onEnterPip = onEnterPip,
+                onOpenMonitor = { showMonitorSheet = true },
+                onPowerOff = onPowerOff
+            )
+        } else {
+            // Top-left live native SDL2 pill
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(12.dp)
+                    .clip(RoundedCornerShape(100))
+                    .desktopHandCursor()
+                    .clickable { hudVisible = !hudVisible },
+                shape = RoundedCornerShape(100),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+                contentColor = MaterialTheme.colorScheme.onSurface
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF4CE0A0))
-                )
-                Text(
-                    text = "${vmConfig.name} · ${scalingMode.label} · ${mouseEmulationMode.shortLabel}",
-                    style = MaterialTheme.typography.labelMedium
-                )
-                Icon(
-                    imageVector = if (hudVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
-                    contentDescription = "Toggle HUD",
-                    modifier = Modifier.size(16.dp)
-                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF4CE0A0))
+                    )
+                    Text(
+                        text = "${vmConfig.name} · ${scalingMode.label} · ${mouseEmulationMode.shortLabel}",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Icon(
+                        imageVector = if (hudVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                        contentDescription = "Toggle HUD",
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
-        }
 
-        // Top-right Desktop controls (Pointer Capture for relative guests + Full Screen F11)
-        AnimatedVisibility(
-            visible = showFullscreenButton && hudVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(12.dp)
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // Top-right Desktop controls (Pointer Capture for relative guests + Full Screen F11)
+            AnimatedVisibility(
+                visible = showFullscreenButton && hudVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(12.dp)
             ) {
-                if (isRelativeGuestPointer) {
-                    AppTooltipBox(
-                        tooltip = if (isPointerCaptured) {
-                            "Release captured mouse (Esc or Ctrl+Alt+G)"
-                        } else {
-                            "Capture physical mouse for relative guest (Ctrl+Alt+G)"
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isRelativeGuestPointer) {
+                        AppTooltipBox(
+                            tooltip = if (isPointerCaptured) {
+                                "Release captured mouse (Esc or Ctrl+Alt+G)"
+                            } else {
+                                "Capture physical mouse for relative guest (Ctrl+Alt+G)"
+                            }
+                        ) {
+                            Surface(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(100))
+                                    .desktopHandCursor()
+                                    .clickable { onTogglePointerCapture() },
+                                shape = RoundedCornerShape(100),
+                                color = if (isPointerCaptured) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.92f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f)
+                                },
+                                contentColor = if (isPointerCaptured) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Mouse,
+                                        contentDescription = if (isPointerCaptured) "Release mouse" else "Capture mouse",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = if (isPointerCaptured) "Mouse Locked (Esc)" else "Capture Mouse",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
                         }
+                    }
+
+                    AppTooltipBox(
+                        tooltip = if (isFullscreen) "Exit Full Screen (F11)" else "Full Screen (F11)"
                     ) {
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(100))
                                 .desktopHandCursor()
-                                .clickable { onTogglePointerCapture() },
+                                .clickable { onToggleFullscreen() },
                             shape = RoundedCornerShape(100),
-                            color = if (isPointerCaptured) {
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.92f)
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f)
-                            },
-                            contentColor = if (isPointerCaptured) {
-                                MaterialTheme.colorScheme.onPrimaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            }
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
+                            contentColor = MaterialTheme.colorScheme.onSurface
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
@@ -752,296 +1052,230 @@ private fun QemuSdlOverlayHud(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.Mouse,
-                                    contentDescription = if (isPointerCaptured) "Release mouse" else "Capture mouse",
-                                    modifier = Modifier.size(16.dp)
+                                    imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                                    contentDescription = if (isFullscreen) "Exit full screen" else "Full screen",
+                                    modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = if (isPointerCaptured) "Mouse Locked (Esc)" else "Capture Mouse",
+                                    text = if (isFullscreen) "Exit Full Screen" else "Full Screen",
                                     style = MaterialTheme.typography.labelMedium
                                 )
                             }
                         }
                     }
                 }
-
-                AppTooltipBox(
-                    tooltip = if (isFullscreen) "Exit Full Screen (F11)" else "Full Screen (F11)"
-                ) {
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(100))
-                            .desktopHandCursor()
-                            .clickable { onToggleFullscreen() },
-                        shape = RoundedCornerShape(100),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
-                        contentColor = MaterialTheme.colorScheme.onSurface
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                                contentDescription = if (isFullscreen) "Exit full screen" else "Full screen",
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = if (isFullscreen) "Exit Full Screen" else "Full Screen",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
-                    }
-                }
             }
-        }
 
-        // Quick Left / Right click buttons on bottom-start when using touch Trackpad / Hover & Tap
-        AnimatedVisibility(
-            visible = hudVisible && !isPointerCaptured && mouseEmulationMode != MouseEmulationMode.DIRECT_TOUCH,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .navigationBarsPadding()
-                .padding(start = 14.dp, bottom = 18.dp)
-        ) {
-            Surface(
-                shape = RoundedCornerShape(100),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.90f)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            if (useLetterboxDock) {
+                // Unfolded nearly-square inner display with ample bottom black letterbox margin:
+                // seat controls strictly below the guest framebuffer so zero guest pixels are covered.
+                AnimatedVisibility(
+                    visible = hudVisible,
+                    enter = fadeIn(),
+                    exit = fadeOut()
                 ) {
-                    FilterChip(
-                        selected = cursorState.leftDown,
-                        onClick = { onPerformClick(false) },
-                        label = { Text("L Click") }
-                    )
-                    FilterChip(
-                        selected = cursorState.rightDown,
-                        onClick = { onPerformClick(true) },
-                        label = { Text("R Click") }
+                    LetterboxDockedControls(
+                        viewportBottomPx = viewportBounds.bottomPx,
+                        mouseEmulationMode = mouseEmulationMode,
+                        scalingMode = scalingMode,
+                        isPointerCaptured = isPointerCaptured,
+                        leftButtonDown = cursorState.leftDown,
+                        rightButtonDown = cursorState.rightDown,
+                        showFullscreenButton = showFullscreenButton,
+                        isFullscreen = isFullscreen,
+                        showSpecialKeys = showSpecialKeys,
+                        onToggleSpecialKeys = { showSpecialKeys = !showSpecialKeys },
+                        onSelectMouseMode = ::selectMouseMode,
+                        onSelectScaling = ::selectScaling,
+                        onPerformClick = onPerformClick,
+                        onShowKeyboard = onShowKeyboard,
+                        onToggleFullscreen = onToggleFullscreen,
+                        onEnterPip = onEnterPip,
+                        onOpenMonitor = { showMonitorSheet = true },
+                        onPowerOff = onPowerOff,
+                        specialKeysStrip = specialKeysStripContent
                     )
                 }
-            }
-        }
-
-        // Bottom Material 3 Expressive Floating Toolbar
-        AnimatedVisibility(
-            visible = hudVisible,
-            enter = fadeIn() + slideInVertically { it / 2 },
-            exit = fadeOut() + slideOutVertically { it / 2 },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = 14.dp)
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                AnimatedVisibility(visible = showSpecialKeys) {
+            } else {
+                // Quick Left / Right click buttons on bottom-start when using touch Trackpad / Hover & Tap
+                AnimatedVisibility(
+                    visible = hudVisible && !isPointerCaptured && mouseEmulationMode != MouseEmulationMode.DIRECT_TOUCH,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .navigationBarsPadding()
+                        .padding(start = 14.dp, bottom = 18.dp)
+                ) {
                     Surface(
                         shape = RoundedCornerShape(100),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f)
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.90f)
                     ) {
                         Row(
-                            modifier = Modifier
-                                .horizontalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             FilterChip(
-                                selected = stickyCtrl,
-                                onClick = {
-                                    stickyCtrl = !stickyCtrl
-                                    if (stickyCtrl) onKeyDown(KeyEvent.KEYCODE_CTRL_LEFT)
-                                    else onKeyUp(KeyEvent.KEYCODE_CTRL_LEFT)
-                                },
-                                label = { Text("Ctrl") }
+                                selected = cursorState.leftDown,
+                                onClick = { onPerformClick(false) },
+                                label = { Text("L Click") }
                             )
                             FilterChip(
-                                selected = stickyAlt,
-                                onClick = {
-                                    stickyAlt = !stickyAlt
-                                    if (stickyAlt) onKeyDown(KeyEvent.KEYCODE_ALT_LEFT)
-                                    else onKeyUp(KeyEvent.KEYCODE_ALT_LEFT)
-                                },
-                                label = { Text("Alt") }
-                            )
-                            val quickKeys = listOf(
-                                "Esc" to KeyEvent.KEYCODE_ESCAPE,
-                                "Tab" to KeyEvent.KEYCODE_TAB,
-                                "Enter" to KeyEvent.KEYCODE_ENTER,
-                                "↑" to KeyEvent.KEYCODE_DPAD_UP,
-                                "↓" to KeyEvent.KEYCODE_DPAD_DOWN,
-                                "←" to KeyEvent.KEYCODE_DPAD_LEFT,
-                                "→" to KeyEvent.KEYCODE_DPAD_RIGHT,
-                                "F1" to KeyEvent.KEYCODE_F1,
-                                "F2" to KeyEvent.KEYCODE_F2,
-                                "F8" to KeyEvent.KEYCODE_F8,
-                                "F12" to KeyEvent.KEYCODE_F12
-                            )
-                            quickKeys.forEach { (label, keyCode) ->
-                                FilterChip(
-                                    selected = false,
-                                    onClick = {
-                                        onKeyDown(keyCode)
-                                        onKeyUp(keyCode)
-                                        if (stickyCtrl) {
-                                            stickyCtrl = false
-                                            onKeyUp(KeyEvent.KEYCODE_CTRL_LEFT)
-                                        }
-                                        if (stickyAlt) {
-                                            stickyAlt = false
-                                            onKeyUp(KeyEvent.KEYCODE_ALT_LEFT)
-                                        }
-                                    },
-                                    label = { Text(label) }
-                                )
-                            }
-                            FilterChip(
-                                selected = false,
-                                onClick = {
-                                    onKeyDown(KeyEvent.KEYCODE_CTRL_LEFT)
-                                    onKeyDown(KeyEvent.KEYCODE_ALT_LEFT)
-                                    onKeyDown(KeyEvent.KEYCODE_FORWARD_DEL)
-                                    onKeyUp(KeyEvent.KEYCODE_FORWARD_DEL)
-                                    onKeyUp(KeyEvent.KEYCODE_ALT_LEFT)
-                                    onKeyUp(KeyEvent.KEYCODE_CTRL_LEFT)
-                                },
-                                label = { Text("Ctrl+Alt+Del") }
+                                selected = cursorState.rightDown,
+                                onClick = { onPerformClick(true) },
+                                label = { Text("R Click") }
                             )
                         }
                     }
                 }
 
-                HorizontalFloatingToolbar(
-                    expanded = true,
-                    colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors(),
-                    floatingActionButton = {
-                        AppTooltipBox(tooltip = "VM Settings & Monitor") {
-                            FloatingToolbarDefaults.VibrantFloatingActionButton(
-                                onClick = { showMonitorSheet = true },
-                                modifier = Modifier.desktopHandCursor()
-                            ) {
-                                Icon(Icons.Rounded.Terminal, contentDescription = "VM Settings & Power")
-                            }
-                        }
-                    }
+                // Bottom Material 3 Expressive Floating Toolbar
+                AnimatedVisibility(
+                    visible = hudVisible,
+                    enter = fadeIn() + slideInVertically { it / 2 },
+                    exit = fadeOut() + slideOutVertically { it / 2 },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(bottom = 14.dp)
                 ) {
-                    Box {
-                        AppTooltipBox(tooltip = "Mouse emulation mode") {
-                            IconButton(
-                                onClick = { showMouseMenu = true },
-                                modifier = Modifier.desktopHandCursor()
-                            ) {
-                                Icon(
-                                    imageVector = when (mouseEmulationMode) {
-                                        MouseEmulationMode.TRACKPAD_RELATIVE -> Icons.Rounded.Mouse
-                                        MouseEmulationMode.DIRECT_TOUCH -> Icons.Rounded.TouchApp
-                                        MouseEmulationMode.DIRECT_HOVER_TAP -> Icons.Rounded.Tune
-                                    },
-                                    contentDescription = "Select mouse emulation mode"
-                                )
-                            }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        AnimatedVisibility(visible = showSpecialKeys) {
+                            specialKeysStripContent()
                         }
-                        DropdownMenu(
-                            expanded = showMouseMenu,
-                            onDismissRequest = { showMouseMenu = false }
-                        ) {
-                            MouseEmulationMode.entries.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(
-                                                text = if (mouseEmulationMode == mode) "✓ ${mode.label}" else mode.label,
-                                                style = MaterialTheme.typography.labelLarge
-                                            )
-                                            Text(
-                                                text = mode.description,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        showMouseMenu = false
-                                        selectMouseMode(mode)
-                                    }
-                                )
-                            }
-                        }
-                    }
 
-                    Box {
-                        AppTooltipBox(tooltip = "Viewport scaling") {
-                            IconButton(
-                                onClick = { showScalingMenu = true },
-                                modifier = Modifier.desktopHandCursor()
-                            ) {
-                                Icon(Icons.Rounded.AspectRatio, contentDescription = "Select viewport scaling")
-                            }
-                        }
-                        DropdownMenu(
-                            expanded = showScalingMenu,
-                            onDismissRequest = { showScalingMenu = false }
-                        ) {
-                            SdlScalingMode.entries.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(
-                                                text = if (scalingMode == mode) "✓ ${mode.label}" else mode.label,
-                                                style = MaterialTheme.typography.labelLarge
-                                            )
-                                            Text(
-                                                text = mode.description,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        showScalingMenu = false
-                                        selectScaling(mode)
+                        HorizontalFloatingToolbar(
+                            expanded = true,
+                            colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors(),
+                            floatingActionButton = {
+                                AppTooltipBox(tooltip = "VM Settings & Monitor") {
+                                    FloatingToolbarDefaults.VibrantFloatingActionButton(
+                                        onClick = { showMonitorSheet = true },
+                                        modifier = Modifier.desktopHandCursor()
+                                    ) {
+                                        Icon(Icons.Rounded.Terminal, contentDescription = "VM Settings & Power")
                                     }
-                                )
+                                }
                             }
-                        }
-                    }
-
-                    AppTooltipBox(tooltip = "Toggle soft keyboard") {
-                        IconButton(onClick = onShowKeyboard, modifier = Modifier.desktopHandCursor()) {
-                            Icon(Icons.Rounded.Keyboard, contentDescription = "Toggle soft keyboard")
-                        }
-                    }
-                    AppTooltipBox(tooltip = "Special keys bar") {
-                        IconButton(
-                            onClick = { showSpecialKeys = !showSpecialKeys },
-                            modifier = Modifier.desktopHandCursor()
                         ) {
-                            Icon(Icons.Rounded.KeyboardCommandKey, contentDescription = "Special keys bar")
-                        }
-                    }
-                    if (showFullscreenButton) {
-                        AppTooltipBox(tooltip = if (isFullscreen) "Exit Full Screen (F11)" else "Full Screen (F11)") {
-                            IconButton(onClick = onToggleFullscreen, modifier = Modifier.desktopHandCursor()) {
-                                Icon(
-                                    imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                                    contentDescription = if (isFullscreen) "Exit full screen" else "Full screen"
-                                )
+                            Box {
+                                AppTooltipBox(tooltip = "Mouse emulation mode") {
+                                    IconButton(
+                                        onClick = { showMouseMenu = true },
+                                        modifier = Modifier.desktopHandCursor()
+                                    ) {
+                                        Icon(
+                                            imageVector = when (mouseEmulationMode) {
+                                                MouseEmulationMode.TRACKPAD_RELATIVE -> Icons.Rounded.Mouse
+                                                MouseEmulationMode.DIRECT_TOUCH -> Icons.Rounded.TouchApp
+                                                MouseEmulationMode.DIRECT_HOVER_TAP -> Icons.Rounded.Tune
+                                            },
+                                            contentDescription = "Select mouse emulation mode"
+                                        )
+                                    }
+                                }
+                                DropdownMenu(
+                                    expanded = showMouseMenu,
+                                    onDismissRequest = { showMouseMenu = false }
+                                ) {
+                                    MouseEmulationMode.entries.forEach { mode ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column {
+                                                    Text(
+                                                        text = if (mouseEmulationMode == mode) "✓ ${mode.label}" else mode.label,
+                                                        style = MaterialTheme.typography.labelLarge
+                                                    )
+                                                    Text(
+                                                        text = mode.description,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                showMouseMenu = false
+                                                selectMouseMode(mode)
+                                            }
+                                        )
+                                    }
+                                }
                             }
-                        }
-                    }
-                    AppTooltipBox(tooltip = "Power off VM") {
-                        IconButton(onClick = onPowerOff, modifier = Modifier.desktopHandCursor()) {
-                            Icon(Icons.Rounded.PowerSettingsNew, contentDescription = "Power off VM")
+
+                            Box {
+                                AppTooltipBox(tooltip = "Viewport scaling") {
+                                    IconButton(
+                                        onClick = { showScalingMenu = true },
+                                        modifier = Modifier.desktopHandCursor()
+                                    ) {
+                                        Icon(Icons.Rounded.AspectRatio, contentDescription = "Select viewport scaling")
+                                    }
+                                }
+                                DropdownMenu(
+                                    expanded = showScalingMenu,
+                                    onDismissRequest = { showScalingMenu = false }
+                                ) {
+                                    SdlScalingMode.entries.forEach { mode ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column {
+                                                    Text(
+                                                        text = if (scalingMode == mode) "✓ ${mode.label}" else mode.label,
+                                                        style = MaterialTheme.typography.labelLarge
+                                                    )
+                                                    Text(
+                                                        text = mode.description,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                showScalingMenu = false
+                                                selectScaling(mode)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            AppTooltipBox(tooltip = "Toggle soft keyboard") {
+                                IconButton(onClick = onShowKeyboard, modifier = Modifier.desktopHandCursor()) {
+                                    Icon(Icons.Rounded.Keyboard, contentDescription = "Toggle soft keyboard")
+                                }
+                            }
+                            AppTooltipBox(tooltip = "Special keys bar") {
+                                IconButton(
+                                    onClick = { showSpecialKeys = !showSpecialKeys },
+                                    modifier = Modifier.desktopHandCursor()
+                                ) {
+                                    Icon(Icons.Rounded.KeyboardCommandKey, contentDescription = "Special keys bar")
+                                }
+                            }
+                            AppTooltipBox(tooltip = "Picture-in-Picture (Ctrl+Alt+P)") {
+                                IconButton(onClick = onEnterPip, modifier = Modifier.desktopHandCursor()) {
+                                    Icon(Icons.Rounded.PictureInPictureAlt, contentDescription = "Picture-in-Picture")
+                                }
+                            }
+                            if (showFullscreenButton) {
+                                AppTooltipBox(tooltip = if (isFullscreen) "Exit Full Screen (F11)" else "Full Screen (F11)") {
+                                    IconButton(onClick = onToggleFullscreen, modifier = Modifier.desktopHandCursor()) {
+                                        Icon(
+                                            imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                                            contentDescription = if (isFullscreen) "Exit full screen" else "Full screen"
+                                        )
+                                    }
+                                }
+                            }
+                            AppTooltipBox(tooltip = "Power off VM") {
+                                IconButton(onClick = onPowerOff, modifier = Modifier.desktopHandCursor()) {
+                                    Icon(Icons.Rounded.PowerSettingsNew, contentDescription = "Power off VM")
+                                }
+                            }
                         }
                     }
                 }

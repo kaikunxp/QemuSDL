@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SettingsApplications
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.ViewWeek
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -79,6 +81,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SplitButtonDefaults
 import androidx.compose.material3.SplitButtonLayout
+import androidx.compose.material3.SplitButtonShapes
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -129,6 +132,7 @@ fun VmLibraryScreen(
     onEditVm: (String) -> Unit,
     onRunSetup: (String) -> Unit,
     onBootVm: (VmConfig) -> Unit,
+    onBootVmSideBySide: ((VmConfig) -> Unit)? = null,
     onOpenIsoDownloader: () -> Unit,
     onOpenRuntimeSetup: () -> Unit,
     formFactor: AppFormFactor = AppFormFactor.PHONE,
@@ -561,6 +565,18 @@ fun VmLibraryScreen(
                         onBootVm(vm)
                     }
                 )
+                if (!isPhone && onBootVmSideBySide != null) {
+                    ListItem(
+                        headlineContent = { Text("Boot Side-by-Side") },
+                        supportingContent = { Text("Open VM in split-screen alongside this window") },
+                        leadingContent = { Icon(Icons.Rounded.ViewWeek, contentDescription = null) },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        modifier = Modifier.desktopHandCursor().clickable {
+                            longPressedVmId = null
+                            onBootVmSideBySide(vm)
+                        }
+                    )
+                }
                 ListItem(
                     headlineContent = { Text("Configure Hardware") },
                     leadingContent = { Icon(Icons.Outlined.Edit, contentDescription = null) },
@@ -866,45 +882,47 @@ private fun ExpressiveVmCard(
         shadowElevation = if (isSelected) 2.dp else 1.dp
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                itemVerticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    shape = RoundedCornerShape(100),
+                    color = badgeContainer,
+                    contentColor = badgeContent
                 ) {
+                    Text(
+                        text = vm.osPreset.badgeText,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+                if (vm.needsFirstTimeSetup) {
                     Surface(
                         shape = RoundedCornerShape(100),
-                        color = badgeContainer,
-                        contentColor = badgeContent
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
                     ) {
                         Text(
-                            text = vm.osPreset.badgeText,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelMedium
+                            text = "SETUP",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
-                    if (vm.needsFirstTimeSetup) {
-                        Surface(
-                            shape = RoundedCornerShape(100),
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                        ) {
-                            Text(
-                                text = "SETUP",
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
-                    }
                 }
-
                 Text(
                     text = "${vm.architecture.badgeText} · ${vm.machineType.qemuFlag.uppercase()} · ${vm.resolution.label}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -958,6 +976,46 @@ private fun ExpressiveVmCard(
 
             Spacer(Modifier.height(16.dp))
 
+            // Use explicit Dp outer corners instead of percentage-based CornerFull/CircleShape:
+            // Material 3's AnimatedShapeState initializes corner Animatables during layout before
+            // createOutline sets size, which evaluates 50% of Size.Zero to 0px when cards scroll
+            // into view inside a LazyVerticalGrid.
+            val outerCorner = remember { CornerSize(SplitButtonDefaults.SmallContainerHeight / 2) }
+            val leadingButtonShapes = remember(outerCorner) {
+                SplitButtonShapes(
+                    shape = RoundedCornerShape(
+                        topStart = outerCorner,
+                        topEnd = SplitButtonDefaults.SmallInnerCornerSize,
+                        bottomEnd = SplitButtonDefaults.SmallInnerCornerSize,
+                        bottomStart = outerCorner
+                    ),
+                    pressedShape = RoundedCornerShape(
+                        topStart = outerCorner,
+                        topEnd = SplitButtonDefaults.SmallInnerCornerSizePressed,
+                        bottomEnd = SplitButtonDefaults.SmallInnerCornerSizePressed,
+                        bottomStart = outerCorner
+                    ),
+                    checkedShape = null
+                )
+            }
+            val trailingButtonShapes = remember(outerCorner) {
+                SplitButtonShapes(
+                    shape = RoundedCornerShape(
+                        topStart = SplitButtonDefaults.SmallInnerCornerSize,
+                        topEnd = outerCorner,
+                        bottomEnd = outerCorner,
+                        bottomStart = SplitButtonDefaults.SmallInnerCornerSize
+                    ),
+                    pressedShape = RoundedCornerShape(
+                        topStart = SplitButtonDefaults.SmallInnerCornerSizePressed,
+                        topEnd = outerCorner,
+                        bottomEnd = outerCorner,
+                        bottomStart = SplitButtonDefaults.SmallInnerCornerSizePressed
+                    ),
+                    checkedShape = RoundedCornerShape(outerCorner)
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -966,7 +1024,10 @@ private fun ExpressiveVmCard(
                 Box {
                     SplitButtonLayout(
                         leadingButton = {
-                            SplitButtonDefaults.LeadingButton(onClick = onPrimaryAction) {
+                            SplitButtonDefaults.LeadingButton(
+                                onClick = onPrimaryAction,
+                                shapes = leadingButtonShapes
+                            ) {
                                 Icon(
                                     imageVector = if (vm.needsFirstTimeSetup) {
                                         Icons.Rounded.AutoAwesome
@@ -983,7 +1044,8 @@ private fun ExpressiveVmCard(
                         trailingButton = {
                             SplitButtonDefaults.TrailingButton(
                                 checked = menuExpanded,
-                                onCheckedChange = { menuExpanded = it }
+                                onCheckedChange = { menuExpanded = it },
+                                shapes = trailingButtonShapes
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.KeyboardArrowDown,
