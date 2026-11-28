@@ -2,6 +2,7 @@ package com.qemusdl.app.ui.viewport
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Bundle
@@ -45,6 +46,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardCommandKey
 import androidx.compose.material.icons.rounded.Mouse
@@ -89,9 +92,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.qemusdl.app.data.MouseEmulationMode
 import com.qemusdl.app.data.SdlScalingMode
@@ -128,6 +128,8 @@ class QemuSdlActivity : SDLActivity() {
     private var qemuFullArgs: List<String> = emptyList()
     private var firmwareDirPath: String? = null
     private var cursorUiState by mutableStateOf(VirtualCursorUiState())
+    private var windowingState by mutableStateOf(WindowingEnvironmentState())
+    private var hasEverDetectedWindowed = false
 
     override fun getLibraries(): Array<String> {
         // Parse architecture early if getLibraries() is invoked during super.onCreate()
@@ -225,7 +227,11 @@ class QemuSdlActivity : SDLActivity() {
 
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        hideSystemBars()
+
+        val initialWindowing = DesktopWindowingHelper.inspect(this)
+        hasEverDetectedWindowed = initialWindowing.showFullscreenButton
+        val startFullscreen = !initialWindowing.showFullscreenButton
+        applyFullscreenState(startFullscreen)
 
         // Apply initial viewport scaling, mouse emulation mode, and live cursor listener on SDLSurface
         mSurface?.setGuestResolution(vmConfig.resolution.width, vmConfig.resolution.height)
@@ -247,6 +253,16 @@ class QemuSdlActivity : SDLActivity() {
 
         // Overlay our Material 3 Expressive Compose HUD directly on top of SDLActivity.mLayout
         if (!mBrokenLibraries && mLayout != null) {
+            mLayout.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                val newW = right - left
+                val newH = bottom - top
+                val oldW = oldRight - oldLeft
+                val oldH = oldBottom - oldTop
+                if (newW > 0 && newH > 0 && (newW != oldW || newH != oldH)) {
+                    refreshWindowingState()
+                    mSurface?.post { mSurface?.requestViewportRescale() }
+                }
+            }
             val hudOverlay = ComposeView(this).apply {
                 setContent {
                     QemuSDLTheme(darkTheme = true) {
@@ -255,6 +271,9 @@ class QemuSdlActivity : SDLActivity() {
                             cursorState = cursorUiState,
                             qemuCommandLine = qemuFullArgs.joinToString(" "),
                             firmwarePath = firmwareDirPath ?: "Not bundled",
+                            showFullscreenButton = windowingState.showFullscreenButton,
+                            isFullscreen = windowingState.isFullscreen,
+                            onToggleFullscreen = { toggleFullscreen() },
                             onScalingModeChanged = { newScale ->
                                 vmConfig = vmConfig.copy(scalingMode = newScale)
                                 mSurface?.setScalingMode(newScale.nativeCode)
@@ -303,7 +322,21 @@ class QemuSdlActivity : SDLActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus && windowingState.isFullscreen) {
+            applyFullscreenState(true)
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        refreshWindowingState()
+        mSurface?.post { mSurface?.requestViewportRescale() }
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        refreshWindowingState()
+        mSurface?.post { mSurface?.requestViewportRescale() }
     }
 
     override fun onDestroy() {
@@ -321,11 +354,28 @@ class QemuSdlActivity : SDLActivity() {
         Process.killProcess(Process.myPid())
     }
 
-    private fun hideSystemBars() {
-        val controller = WindowCompat.getInsetsController(window, window.decorView)
-        controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller.hide(WindowInsetsCompat.Type.systemBars())
+    private fun toggleFullscreen() {
+        val target = !windowingState.isFullscreen
+        applyFullscreenState(target)
+        mSurface?.post { mSurface?.requestViewportRescale() }
+    }
+
+    private fun applyFullscreenState(fullscreen: Boolean) {
+        DesktopWindowingHelper.applyFullscreen(this, fullscreen)
+        SDLActivity.mFullscreenModeActive = fullscreen
+        refreshWindowingState(explicitFullscreen = fullscreen)
+    }
+
+    private fun refreshWindowingState(explicitFullscreen: Boolean = windowingState.isFullscreen) {
+        val inspected = DesktopWindowingHelper.inspect(
+            activity = this,
+            previouslyDetectedWindowed = hasEverDetectedWindowed,
+            isCurrentlyFullscreen = explicitFullscreen
+        )
+        if (inspected.showFullscreenButton) {
+            hasEverDetectedWindowed = true
+        }
+        windowingState = inspected
     }
 
     private fun resolveMediaPath(pathOrUri: String, readWrite: Boolean): String? {
@@ -493,6 +543,9 @@ private fun QemuSdlOverlayHud(
     cursorState: VirtualCursorUiState,
     qemuCommandLine: String,
     firmwarePath: String,
+    showFullscreenButton: Boolean,
+    isFullscreen: Boolean,
+    onToggleFullscreen: () -> Unit,
     onScalingModeChanged: (SdlScalingMode) -> Unit,
     onMouseEmulationModeChanged: (MouseEmulationMode) -> Unit,
     onTrackpadSensitivityChanged: (Float) -> Unit,
@@ -566,6 +619,42 @@ private fun QemuSdlOverlayHud(
                     contentDescription = "Toggle HUD",
                     modifier = Modifier.size(16.dp)
                 )
+            }
+        }
+
+        // Top-right Full Screen button on desktop / windowed platforms (Samsung DeX, Moto Ready For, ChromeOS, etc.)
+        AnimatedVisibility(
+            visible = showFullscreenButton && hudVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(12.dp)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(100))
+                    .clickable { onToggleFullscreen() },
+                shape = RoundedCornerShape(100),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                        contentDescription = if (isFullscreen) "Exit full screen" else "Full screen",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = if (isFullscreen) "Exit Full Screen" else "Full Screen",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
             }
         }
 
@@ -780,6 +869,14 @@ private fun QemuSdlOverlayHud(
                     }
                     IconButton(onClick = { showSpecialKeys = !showSpecialKeys }) {
                         Icon(Icons.Rounded.KeyboardCommandKey, contentDescription = "Special keys bar")
+                    }
+                    if (showFullscreenButton) {
+                        IconButton(onClick = onToggleFullscreen) {
+                            Icon(
+                                imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                                contentDescription = if (isFullscreen) "Exit full screen" else "Full screen"
+                            )
+                        }
                     }
                     IconButton(onClick = onPowerOff) {
                         Icon(Icons.Rounded.PowerSettingsNew, contentDescription = "Power off VM")

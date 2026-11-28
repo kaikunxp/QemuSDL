@@ -36,7 +36,7 @@
         <!-- True in-process QEMU x86_64 + SDL2 Activity running in an isolated VM process -->
         <activity
             android:name=".ui.viewport.QemuSdlActivity"
-            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
             android:exported="false"
             android:hardwareAccelerated="true"
             android:preferMinimalPostProcessing="true"
@@ -48,7 +48,7 @@
         <!-- Fallback OpenGL ES 3.0 SDL2-compatible interactive viewport (when ABI lacks libqemu-system-x86_64.so) -->
         <activity
             android:name=".ui.viewport.VmViewportActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode"
             android:exported="false"
             android:hardwareAccelerated="true"
             android:launchMode="singleTask"

@@ -3,6 +3,8 @@ package org.libsdl.app;
 
 import android.content.Context;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -57,6 +59,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     private float mCursorNormX = 0.5f;
     private float mCursorNormY = 0.5f;
     private boolean mSyncTickerActive = false;
+    private boolean mInitialMouseSeeded = false;
 
     public interface CursorListener {
         void onCursorUpdated(float screenX, float screenY, boolean visible, boolean leftDown, boolean rightDown);
@@ -144,6 +147,25 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         }, 55L);
     }
 
+    private void syncViewportNow(int surfW, int surfH) {
+        if (surfW <= 0 || surfH <= 0) {
+            return;
+        }
+        try {
+            long packed = com.qemusdl.app.sdl.NativeQemuBridge.syncSdlViewport(surfW, surfH);
+            if (packed != 0L) {
+                int liveW = (int) (packed >> 32);
+                int liveH = (int) (packed & 0xFFFFFFFFL);
+                if (liveW > 0 && liveH > 0 && (liveW != mGuestWidth || liveH != mGuestHeight)) {
+                    mGuestWidth = liveW;
+                    mGuestHeight = liveH;
+                    applyViewScaling();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     private final Runnable mViewportSyncRunnable = new Runnable() {
         @Override
         public void run() {
@@ -152,24 +174,30 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             }
             int surfW = Math.round(mWidth > 1f ? mWidth : (float) getWidth());
             int surfH = Math.round(mHeight > 1f ? mHeight : (float) getHeight());
-            if (surfW > 0 && surfH > 0) {
-                try {
-                    long packed = com.qemusdl.app.sdl.NativeQemuBridge.syncSdlViewport(surfW, surfH);
-                    if (packed != 0L) {
-                        int liveW = (int) (packed >> 32);
-                        int liveH = (int) (packed & 0xFFFFFFFFL);
-                        if (liveW > 0 && liveH > 0 && (liveW != mGuestWidth || liveH != mGuestHeight)) {
-                            mGuestWidth = liveW;
-                            mGuestHeight = liveH;
-                            applyViewScaling();
-                        }
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
+            syncViewportNow(surfW, surfH);
             postDelayed(this, 180L);
         }
     };
+
+    public void requestViewportRescale() {
+        int w = getWidth();
+        int h = getHeight();
+        if (w > 0 && h > 0) {
+            mWidth = w;
+            mHeight = h;
+            Display activeDisplay = getDisplay();
+            if (activeDisplay != null) {
+                mDisplay = activeDisplay;
+            }
+            float refreshRate = (mDisplay != null) ? mDisplay.getRefreshRate() : 60.0f;
+            if (mIsSurfaceReady) {
+                SDLActivity.nativeSetScreenResolution(w, h, w, h, refreshRate);
+                SDLActivity.onNativeResize();
+                syncViewportNow(w, h);
+            }
+            applyViewScaling();
+        }
+    }
 
     public void setGuestResolution(int guestWidth, int guestHeight) {
         mGuestWidth = Math.max(320, guestWidth);
@@ -210,6 +238,13 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         float surfH = Math.max(1f, mHeight > 1f ? mHeight : (float) getHeight());
         if (surfW <= 1f || surfH <= 1f || mGuestWidth <= 0 || mGuestHeight <= 0) {
             return;
+        }
+        // Keep scaling centered around the current view bounds across freeform window resizes
+        if (Build.VERSION.SDK_INT >= 28) {
+            resetPivot();
+        } else {
+            setPivotX(surfW * 0.5f);
+            setPivotY(surfH * 0.5f);
         }
         float[] vp = new float[4];
         computeSdlInnerViewport(vp);
@@ -322,7 +357,12 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
 
         Log.v("SDL", "Window size: " + width + "x" + height);
         Log.v("SDL", "Device size: " + nDeviceWidth + "x" + nDeviceHeight);
-        SDLActivity.nativeSetScreenResolution(width, height, nDeviceWidth, nDeviceHeight, mDisplay.getRefreshRate());
+        Display activeDisplay = getDisplay();
+        if (activeDisplay != null) {
+            mDisplay = activeDisplay;
+        }
+        float refreshRate = (mDisplay != null) ? mDisplay.getRefreshRate() : 60.0f;
+        SDLActivity.nativeSetScreenResolution(width, height, nDeviceWidth, nDeviceHeight, refreshRate);
         SDLActivity.onNativeResize();
 
         // Prevent a screen distortion glitch,
@@ -351,13 +391,15 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
            }
         }
 
-        // Don't skip in MultiWindow.
+        // Don't skip in MultiWindow or Desktop/Windowed environments (Samsung DeX, Moto Ready For, ChromeOS, external displays).
         if (skip) {
-            if (Build.VERSION.SDK_INT >= 24 /* Android 7.0 (N) */) {
-                if (SDLActivity.mSingleton.isInMultiWindowMode()) {
-                    Log.v("SDL", "Don't skip in Multi-Window");
-                    skip = false;
-                }
+            boolean isMultiWindow = (Build.VERSION.SDK_INT >= 24) && SDLActivity.mSingleton.isInMultiWindowMode();
+            boolean isDeskUi = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_DESK;
+            boolean isSecondaryDisplay = (mDisplay != null && mDisplay.getDisplayId() != Display.DEFAULT_DISPLAY);
+            boolean isPcFeature = getContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_PC);
+            if (isMultiWindow || SDLActivity.isDeXMode() || SDLActivity.isChromebook() || isDeskUi || isSecondaryDisplay || isPcFeature) {
+                Log.v("SDL", "Don't skip in Multi-Window / Desktop mode");
+                skip = false;
             }
         }
 
@@ -377,26 +419,50 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         SDLActivity.handleNativeState();
 
         applyViewScaling();
+        syncViewportNow(width, height);
         mSyncTickerActive = true;
         removeCallbacks(mViewportSyncRunnable);
         postDelayed(mViewportSyncRunnable, 180L);
 
-        // Automatically seed initial mouse focus and trigger QEMU SDL2's mouse grab once the guest window opens
-        postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                mCursorNormX = 0.5f;
-                mCursorNormY = 0.5f;
-                float[] vp = new float[4];
-                computeSdlInnerViewport(vp);
-                float cx = vp[0] + 0.5f * vp[2];
-                float cy = vp[1] + 0.5f * vp[3];
-                notifyCursorChanged();
-                SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, cx, cy, false);
-                SDLActivity.onNativeMouse(MotionEvent.BUTTON_PRIMARY, MotionEvent.ACTION_DOWN, cx, cy, false);
-                SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, cx, cy, false);
+        // Automatically seed initial mouse focus and trigger QEMU SDL2's mouse grab once when the guest window first opens
+        if (!mInitialMouseSeeded) {
+            mInitialMouseSeeded = true;
+            postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    mCursorNormX = 0.5f;
+                    mCursorNormY = 0.5f;
+                    float[] vp = new float[4];
+                    computeSdlInnerViewport(vp);
+                    float cx = vp[0] + 0.5f * vp[2];
+                    float cy = vp[1] + 0.5f * vp[3];
+                    notifyCursorChanged();
+                    SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, cx, cy, false);
+                    SDLActivity.onNativeMouse(MotionEvent.BUTTON_PRIMARY, MotionEvent.ACTION_DOWN, cx, cy, false);
+                    SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, cx, cy, false);
+                }
+            }, 700L);
+        }
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (w > 0 && h > 0 && (w != oldw || h != oldh)) {
+            mWidth = w;
+            mHeight = h;
+            applyViewScaling();
+            if (mIsSurfaceReady) {
+                Display activeDisplay = getDisplay();
+                if (activeDisplay != null) {
+                    mDisplay = activeDisplay;
+                }
+                float refreshRate = (mDisplay != null) ? mDisplay.getRefreshRate() : 60.0f;
+                SDLActivity.nativeSetScreenResolution(w, h, w, h, refreshRate);
+                SDLActivity.onNativeResize();
+                syncViewportNow(w, h);
             }
-        }, 700L);
+        }
     }
 
     // Key events

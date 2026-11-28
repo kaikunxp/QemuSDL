@@ -543,6 +543,7 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeSyncSdlViewport(
     using GetWindowSizeFn = void (*)(void*, int*, int*);
     using GetWindowDataFn = void* (*)(void*, const char*);
     using GetRendererFn = void* (*)(void*);
+    using GetRendererOutputSizeFn = int (*)(void*, int*, int*);
     using RenderGetLogicalSizeFn = void (*)(void*, int*, int*);
     using AndroidSetScreenResFn = void (*)(int, int, int, int, float);
     using AndroidSendResizeFn = void (*)(void*);
@@ -551,6 +552,7 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeSyncSdlViewport(
     static auto fnGetWinSize = reinterpret_cast<GetWindowSizeFn>(dlsym(RTLD_DEFAULT, "SDL_GetWindowSize"));
     static auto fnGetWinData = reinterpret_cast<GetWindowDataFn>(dlsym(RTLD_DEFAULT, "SDL_GetWindowData"));
     static auto fnGetRenderer = reinterpret_cast<GetRendererFn>(dlsym(RTLD_DEFAULT, "SDL_GetRenderer"));
+    static auto fnGetRendererOut = reinterpret_cast<GetRendererOutputSizeFn>(dlsym(RTLD_DEFAULT, "SDL_GetRendererOutputSize"));
     static auto fnGetLogical = reinterpret_cast<RenderGetLogicalSizeFn>(dlsym(RTLD_DEFAULT, "SDL_RenderGetLogicalSize"));
     static auto fnSetRes = reinterpret_cast<AndroidSetScreenResFn>(dlsym(RTLD_DEFAULT, "Android_SetScreenResolution"));
     static auto fnSendResize = reinterpret_cast<AndroidSendResizeFn>(dlsym(RTLD_DEFAULT, "Android_SendResize"));
@@ -568,11 +570,21 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeSyncSdlViewport(
         return 0L;
     }
 
+    void* renderer = fnGetRenderer ? fnGetRenderer(window) : nullptr;
+
     if (surfaceWidth > 0 && surfaceHeight > 0 && fnGetWinSize && fnSetRes && fnSendResize) {
         int winW = 0;
         int winH = 0;
         fnGetWinSize(window, &winW, &winH);
-        if (winW != surfaceWidth || winH != surfaceHeight) {
+        bool needsResize = (winW != surfaceWidth || winH != surfaceHeight);
+        if (!needsResize && renderer && fnGetRendererOut) {
+            int outW = 0;
+            int outH = 0;
+            if (fnGetRendererOut(renderer, &outW, &outH) == 0 && outW > 0 && outH > 0) {
+                needsResize = (outW != surfaceWidth || outH != surfaceHeight);
+            }
+        }
+        if (needsResize) {
             fnSetRes(surfaceWidth, surfaceHeight, surfaceWidth, surfaceHeight, 60.0f);
             fnSendResize(window);
         }
@@ -580,11 +592,8 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeSyncSdlViewport(
 
     int logicalW = 0;
     int logicalH = 0;
-    if (fnGetRenderer && fnGetLogical) {
-        void* renderer = fnGetRenderer(window);
-        if (renderer) {
-            fnGetLogical(renderer, &logicalW, &logicalH);
-        }
+    if (renderer && fnGetLogical) {
+        fnGetLogical(renderer, &logicalW, &logicalH);
     }
     if ((logicalW <= 0 || logicalH <= 0) && fnGetWinData) {
         logicalW = static_cast<int>(reinterpret_cast<uintptr_t>(fnGetWinData(window, "qemu_guest_w")));

@@ -1,0 +1,150 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      rebuild_native:
+        description: 'Force rebuild of native SDL2 + QEMU libraries (arm64-v8a)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | tr -d '\r\n ' | base64 -d > debug.keystore
+            echo "Using keystore from DEBUG_KEYSTORE_BASE64 secret"
+          elif [ -f .github/signing/ci-debug.keystore ]; then
+            cp .github/signing/ci-debug.keystore debug.keystore
+            echo "Using persistent repository CI keystore (.github/signing/ci-debug.keystore)"
+          elif [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+            echo "Using repository debug.keystore.base64"
+          else
+            echo "::error::No persistent signing keystore found (.github/signing/ci-debug.keystore or DEBUG_KEYSTORE_BASE64). Run ./scripts/setup-ci-keystore.sh and commit .github/signing/ci-debug.keystore."
+            exit 1
+          fi
+          keytool -list -keystore debug.keystore -storepass android | grep -E "Alias name:|Certificate fingerprint"
+
+      - name: Accept Android SDK licenses and install NDK / CMake
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.22.1"
+
+      - name: Check native QEMU + SDL2 binaries
+        id: native_check
+        run: |
+          FORCE="${{ inputs.rebuild_native || false }}"
+          if [ "$FORCE" = "true" ] || \
+             [ ! -f app/src/main/jniLibs/arm64-v8a/libSDL2.so ] || \
+             [ ! -f app/src/main/jniLibs/arm64-v8a/libqemu-system-x86_64.so ]; then
+            echo "need_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "need_build=false" >> "$GITHUB_OUTPUT"
+            echo "Using bundled arm64-v8a native libraries from app/src/main/jniLibs/arm64-v8a/"
+          fi
+
+      - name: Cache native cross-build prefix
+        if: steps.native_check.outputs.need_build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: .native-build.nosync
+          key: qemusdl-native-arm64-${{ hashFiles('scripts/build-sdl2-qemu-android.sh', 'scripts/patches/**') }}
+          restore-keys: |
+            qemusdl-native-arm64-
+
+      - name: Cross-compile SDL2 + QEMU native libraries (arm64-v8a)
+        if: steps.native_check.outputs.need_build == 'true'
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}/ndk/28.2.13676358"
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential meson ninja-build pkg-config \
+            python3 python3-venv python3-pip cmake \
+            autoconf automake libtool bzip2 xz-utils curl
+          chmod +x scripts/build-sdl2-qemu-android.sh
+          ./scripts/build-sdl2-qemu-android.sh --abi=arm64-v8a
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --no-daemon --console=plain
+
+      - name: Build Signed Release APK
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/ci-release.keystore
+          STORE_PASSWORD: android
+          KEY_ALIAS: upload
+          KEY_PASSWORD: android
+        run: |
+          cp debug.keystore "$KEYSTORE_PATH"
+          keytool -changealias \
+            -keystore "$KEYSTORE_PATH" \
+            -storepass android \
+            -alias androiddebugkey \
+            -destalias upload
+          ./gradlew :app:assembleRelease --no-daemon --console=plain
+          rm -f "$KEYSTORE_PATH"
+
+      - name: Prepare named APK
+        id: meta
+        run: |
+          VERSION_NAME=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          mkdir -p build-release
+          if [ -f build.nosync/app/outputs/apk/release/app-release.apk ]; then
+            SRC_APK="build.nosync/app/outputs/apk/release/app-release.apk"
+          else
+            SRC_APK="app/build/outputs/apk/release/app-release.apk"
+          fi
+          APK_OUT="build-release/QemuSDL-v${VERSION_NAME}.apk"
+          cp "$SRC_APK" "$APK_OUT"
+          ls -lh "$APK_OUT"
+          APKSIGNER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | sort -V | tail -n1)
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs "$APK_OUT"
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QemuSDL-APK
+          path: build-release/*.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-{1}', steps.meta.outputs.version, github.run_number) }}
+          name: QemuSDL ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.meta.outputs.version) }}
+          files: build-release/*.apk

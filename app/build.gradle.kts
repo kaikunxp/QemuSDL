@@ -41,10 +41,45 @@ android {
     }
   }
 
+  signingConfigs {
+    create("release") {
+      val envPath = System.getenv("KEYSTORE_PATH")
+      val localKeystore = file("${rootDir}/debug.keystore")
+      val ciKeystore = file("${rootDir}/.github/signing/ci-debug.keystore")
+      storeFile = when {
+        !envPath.isNullOrBlank() -> file(envPath)
+        localKeystore.exists() -> localKeystore
+        else -> ciKeystore
+      }
+      storePassword = System.getenv("STORE_PASSWORD") ?: "android"
+      keyAlias = System.getenv("KEY_ALIAS")
+        ?: if (!envPath.isNullOrBlank()) "upload" else "androiddebugkey"
+      keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
+    }
+    create("debugConfig") {
+      val localKeystore = file("${rootDir}/debug.keystore")
+      val ciKeystore = file("${rootDir}/.github/signing/ci-debug.keystore")
+      storeFile = if (localKeystore.exists()) localKeystore else ciKeystore
+      storePassword = "android"
+      keyAlias = "androiddebugkey"
+      keyPassword = "android"
+    }
+  }
+
   buildTypes {
     release {
+      isCrunchPngs = false
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      signingConfig = signingConfigs.getByName("release")
+    }
+    debug {
+      val hasRepoKeystore =
+        file("${rootDir}/debug.keystore").exists() ||
+          file("${rootDir}/.github/signing/ci-debug.keystore").exists()
+      if (hasRepoKeystore) {
+        signingConfig = signingConfigs.getByName("debugConfig")
+      }
     }
   }
 

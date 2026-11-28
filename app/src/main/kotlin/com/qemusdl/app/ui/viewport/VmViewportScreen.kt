@@ -30,6 +30,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardCommandKey
 import androidx.compose.material.icons.rounded.Mouse
@@ -95,6 +97,9 @@ import java.util.Locale
 fun VmViewportScreen(
     vmConfig: VmConfig,
     qemuCommandLine: String,
+    showFullscreenButton: Boolean = false,
+    isFullscreen: Boolean = true,
+    onToggleFullscreen: () -> Unit = {},
     onSurfaceViewCreated: (SdlSurfaceView) -> Unit,
     onToggleSoftKeyboard: () -> Unit,
     onUpdateVmConfig: (VmConfig) -> Unit = {},
@@ -204,6 +209,42 @@ fun VmViewportScreen(
                     contentDescription = "Toggle HUD",
                     modifier = Modifier.size(16.dp)
                 )
+            }
+        }
+
+        // Top-right Full Screen button on desktop / windowed platforms (Samsung DeX, Moto Ready For, ChromeOS, etc.)
+        AnimatedVisibility(
+            visible = showFullscreenButton && hudVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(12.dp)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(100))
+                    .clickable { onToggleFullscreen() },
+                shape = RoundedCornerShape(100),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                        contentDescription = if (isFullscreen) "Exit full screen" else "Full screen",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = if (isFullscreen) "Exit Full Screen" else "Full Screen",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
             }
         }
 
@@ -345,6 +386,15 @@ fun VmViewportScreen(
 
                     IconButton(onClick = { showSpecialKeys = !showSpecialKeys }) {
                         Icon(Icons.Rounded.KeyboardCommandKey, contentDescription = "Special keys bar")
+                    }
+
+                    if (showFullscreenButton) {
+                        IconButton(onClick = onToggleFullscreen) {
+                            Icon(
+                                imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                                contentDescription = if (isFullscreen) "Exit full screen" else "Full screen"
+                            )
+                        }
                     }
 
                     IconButton(

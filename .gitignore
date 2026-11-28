@@ -17,3 +17,6 @@ local.properties
 /.native-build
 /.native-build.nosync
 /build.nosync
+
+/debug.keystore
+/build-release

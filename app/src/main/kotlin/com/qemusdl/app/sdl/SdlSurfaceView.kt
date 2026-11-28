@@ -51,6 +51,13 @@ class SdlSurfaceView @JvmOverloads constructor(
         NativeQemuBridge.resizeSurface(width, height)
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w > 0 && h > 0 && (w != oldw || h != oldh)) {
+            NativeQemuBridge.resizeSurface(w, h)
+        }
+    }
+
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         NativeQemuBridge.detachSurface()
     }
