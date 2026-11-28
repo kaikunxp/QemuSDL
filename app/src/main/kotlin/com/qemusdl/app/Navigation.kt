@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.DeveloperBoard
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material3.Badge
@@ -71,6 +72,7 @@ import androidx.navigation3.scene.SinglePaneSceneStrategy
 import androidx.navigation3.ui.NavDisplay
 import com.qemusdl.app.data.VmConfig
 import com.qemusdl.app.sdl.RuntimeProbeStatus
+import com.qemusdl.app.ui.about.AboutScreen
 import com.qemusdl.app.ui.adaptive.AppTooltipBox
 import com.qemusdl.app.ui.adaptive.desktopHandCursor
 import com.qemusdl.app.ui.adaptive.rememberAppAdaptiveInfo
@@ -87,7 +89,8 @@ import com.qemusdl.app.ui.viewport.VmViewportActivity
 private enum class TopLevelSection {
     VMS,
     ISOS,
-    RUNTIME
+    RUNTIME,
+    ABOUT
 }
 
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
@@ -149,6 +152,7 @@ fun MainNavigation(
     val activeSection = when (currentTopKey) {
         is IsoDownloaderKey -> TopLevelSection.ISOS
         is RuntimeSetupKey -> TopLevelSection.RUNTIME
+        is AboutKey -> TopLevelSection.ABOUT
         else -> TopLevelSection.VMS
     }
 
@@ -182,6 +186,7 @@ fun MainNavigation(
             TopLevelSection.VMS -> Unit // Root is already VmLibraryKey
             TopLevelSection.ISOS -> backStack.add(IsoDownloaderKey(targetVmId = null))
             TopLevelSection.RUNTIME -> backStack.add(RuntimeSetupKey)
+            TopLevelSection.ABOUT -> backStack.add(AboutKey)
         }
     }
 
@@ -261,6 +266,13 @@ fun MainNavigation(
                             } else {
                                 navigateTopLevel(TopLevelSection.RUNTIME)
                             }
+                        },
+                        onOpenAbout = {
+                            if (adaptiveInfo.isPhone) {
+                                backStack.add(AboutKey)
+                            } else {
+                                navigateTopLevel(TopLevelSection.ABOUT)
+                            }
                         }
                     )
                 }
@@ -320,6 +332,14 @@ fun MainNavigation(
                         onBack = { popBackSafely() }
                     )
                 }
+
+                entry<AboutKey> {
+                    AboutScreen(
+                        viewModel = viewModel,
+                        showBackButton = adaptiveInfo.isPhone,
+                        onBack = { popBackSafely() }
+                    )
+                }
             }
         )
     }
@@ -340,6 +360,10 @@ fun MainNavigation(
             }
             event.isCtrlPressed && event.key == Key.Three -> {
                 navigateTopLevel(TopLevelSection.RUNTIME)
+                true
+            }
+            event.isCtrlPressed && event.key == Key.Four -> {
+                navigateTopLevel(TopLevelSection.ABOUT)
                 true
             }
             event.isCtrlPressed && event.key == Key.N -> {
@@ -453,6 +477,13 @@ private fun TabletNavigationRail(
             onClick = { onSelectSection(TopLevelSection.RUNTIME) },
             icon = { Icon(Icons.Rounded.Storage, contentDescription = "Runtime & Disks") },
             label = { Text("Runtime") },
+            modifier = Modifier.desktopHandCursor()
+        )
+        NavigationRailItem(
+            selected = activeSection == TopLevelSection.ABOUT,
+            onClick = { onSelectSection(TopLevelSection.ABOUT) },
+            icon = { Icon(Icons.Rounded.Info, contentDescription = "About & Updates") },
+            label = { Text("About") },
             modifier = Modifier.desktopHandCursor()
         )
 
@@ -598,6 +629,20 @@ private fun DesktopWorkspaceSidebar(
                     onClick = { onSelectSection(TopLevelSection.RUNTIME) },
                     icon = { Icon(Icons.Rounded.Storage, contentDescription = null) },
                     badge = { Text("$diskCount", style = MaterialTheme.typography.labelMedium) },
+                    colors = NavigationDrawerItemDefaults.colors(
+                        unselectedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    ),
+                    modifier = Modifier.desktopHandCursor()
+                )
+            }
+
+            AppTooltipBox(tooltip = "About & Updates (Ctrl+4)") {
+                NavigationDrawerItem(
+                    label = { Text("About & Updates", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    selected = activeSection == TopLevelSection.ABOUT,
+                    onClick = { onSelectSection(TopLevelSection.ABOUT) },
+                    icon = { Icon(Icons.Rounded.Info, contentDescription = null) },
+                    badge = { Text("v${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelSmall) },
                     colors = NavigationDrawerItemDefaults.colors(
                         unselectedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
                     ),

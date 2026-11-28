@@ -22,6 +22,7 @@ LIBUSB_VERSION="1.0.27"
 LIBDRM_VERSION="2.4.120"
 LIBEPOXY_VERSION="1.5.10"
 VIRGLRENDERER_VERSION="1.0.1"
+SPICE_PROTOCOL_VERSION="0.14.4"
 QEMU_VERSION="9.2.0"
 
 for arg in "$@"; do
@@ -634,6 +635,30 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# 10b. spice-protocol (header-only — enables QEMU's built-in qemu-vdagent clipboard/SPICE protocol)
+# ------------------------------------------------------------------------------
+if [[ ! -f "$PREFIX/lib/pkgconfig/spice-protocol.pc" && ! -f "$PREFIX/share/pkgconfig/spice-protocol.pc" ]]; then
+  SPICE_PROTO_TAR="$SRC_DIR/spice-protocol-${SPICE_PROTOCOL_VERSION}.tar.xz"
+  SPICE_PROTO_SRC="$SRC_DIR/spice-protocol-${SPICE_PROTOCOL_VERSION}"
+  if [[ ! -d "$SPICE_PROTO_SRC" ]]; then
+    echo "[10b/11] Downloading spice-protocol ${SPICE_PROTOCOL_VERSION}..."
+    curl -fsSL "https://www.spice-space.org/download/releases/spice-protocol-${SPICE_PROTOCOL_VERSION}.tar.xz" -o "$SPICE_PROTO_TAR"
+    tar -xJf "$SPICE_PROTO_TAR" -C "$SRC_DIR"
+  fi
+  echo "[10b/11] Installing header-only spice-protocol ${SPICE_PROTOCOL_VERSION}..."
+  rm -rf "$WORK_DIR/build-spice-protocol-$ABI"
+  meson setup "$WORK_DIR/build-spice-protocol-$ABI" "$SPICE_PROTO_SRC" \
+    --prefix="$PREFIX" \
+    --datadir=lib
+  ninja -C "$WORK_DIR/build-spice-protocol-$ABI" install
+else
+  echo "[10b/11] Reusing existing spice-protocol headers"
+fi
+if [[ -f "$PREFIX/share/pkgconfig/spice-protocol.pc" && ! -f "$PKGCFG_DIR/spice-protocol.pc" ]]; then
+  cp -f "$PREFIX/share/pkgconfig/spice-protocol.pc" "$PKGCFG_DIR/spice-protocol.pc"
+fi
+
+# ------------------------------------------------------------------------------
 # 11. QEMU 9.2.0 x86_64-softmmu -> libqemu-system-x86_64.so (SDL2, Venus Vulkan, no VNC)
 # ------------------------------------------------------------------------------
 QEMU_TAR="$SRC_DIR/qemu-${QEMU_VERSION}.tar.xz"
@@ -712,6 +737,28 @@ if "memfd_create(shm_name->str" not in text:
     )
     open(path, "w", encoding="utf-8").write(text)
     print("Patched backends/hostmem-shm.c for Android memfd_create.")
+PYEOF
+
+# Patch QEMU fsdev/9p-marshal.h so Android Bionic's <sys/stat.h> st_*_nsec macros do not collide with V9fsStatDotl fields
+python3 - "$QEMU_SRC/fsdev/9p-marshal.h" <<'PYEOF'
+import sys
+path = sys.argv[1]
+text = open(path, "r", encoding="utf-8").read()
+marker = "/* QEMUSDL_ANDROID_9P_UNDEF_NSEC */"
+if marker not in text:
+    anchor = "#include \"p9array.h\""
+    assert anchor in text, "Expected p9array.h include in fsdev/9p-marshal.h"
+    patch = """#include "p9array.h"
+
+/* QEMUSDL_ANDROID_9P_UNDEF_NSEC */
+#ifdef __ANDROID__
+#undef st_atime_nsec
+#undef st_mtime_nsec
+#undef st_ctime_nsec
+#endif"""
+    text = text.replace(anchor, patch, 1)
+    open(path, "w", encoding="utf-8").write(text)
+    print("Patched fsdev/9p-marshal.h to undefine Android Bionic st_*_nsec macros.")
 PYEOF
 
 # Patch QEMU ui/sdl2.c so DISPLAY_GL_MODE_ES requests an OpenGL ES 3.0 context before SDL_CreateWindow and ensures SDL_GL_MakeCurrent
@@ -796,6 +843,262 @@ open(path, "w", encoding="utf-8").write(text)
 print("Patched ui/sdl2.c for Android OpenGL ES 3.0 context creation and single-window output.")
 PYEOF
 
+# Patch QEMU ui/sdl2.c to add bidirectional SDL2 <-> QEMU clipboard bridge (for qemu-vdagent)
+# and opt-in dynamic guest display auto-resize on Android (QEMU_SDL_AUTO_RESIZE=1)
+python3 - "$QEMU_SRC/ui/sdl2.c" <<'PYEOF'
+import sys
+path = sys.argv[1]
+text = open(path, "r", encoding="utf-8").read()
+changed = False
+
+if '#include "ui/clipboard.h"' not in text:
+    anchor = '#include "ui/sdl2.h"'
+    assert anchor in text, "Expected #include \"ui/sdl2.h\" in ui/sdl2.c"
+    text = text.replace(anchor, anchor + '\n#include "ui/clipboard.h"', 1)
+    changed = True
+
+cb_marker = "/* QEMUSDL_SDL2_CLIPBOARD_BRIDGE */"
+if cb_marker not in text:
+    anchor = "static Notifier mouse_mode_notifier;"
+    assert anchor in text, "Expected mouse_mode_notifier in ui/sdl2.c"
+    cb_impl = """static Notifier mouse_mode_notifier;
+
+/* QEMUSDL_SDL2_CLIPBOARD_BRIDGE */
+#define QEMUSDL_MAX_CLIPBOARD_BYTES (512 * 1024)
+static QemuClipboardPeer sdl_cbpeer;
+static bool sdl_cb_registered;
+static char *sdl_cb_last_text;
+static bool sdl_cb_setting_host;
+static int sdl_last_auto_w;
+static int sdl_last_auto_h;
+
+static void sdl_clipboard_sync_from_host(void)
+{
+    char *text;
+    size_t len;
+    QemuClipboardInfo *info;
+
+    if (!sdl_cb_registered || sdl_cb_setting_host) {
+        return;
+    }
+    if (!SDL_HasClipboardText()) {
+        return;
+    }
+    text = SDL_GetClipboardText();
+    if (!text) {
+        return;
+    }
+    len = strlen(text);
+    if (len == 0 || len > QEMUSDL_MAX_CLIPBOARD_BYTES ||
+        (sdl_cb_last_text && strcmp(sdl_cb_last_text, text) == 0)) {
+        SDL_free(text);
+        return;
+    }
+    g_free(sdl_cb_last_text);
+    sdl_cb_last_text = g_strdup(text);
+
+    info = qemu_clipboard_info_new(&sdl_cbpeer, QEMU_CLIPBOARD_SELECTION_CLIPBOARD);
+    qemu_clipboard_set_data(&sdl_cbpeer, info, QEMU_CLIPBOARD_TYPE_TEXT,
+                            len, text, true);
+    qemu_clipboard_info_unref(info);
+    SDL_free(text);
+}
+
+static void sdl_clipboard_request(QemuClipboardInfo *info,
+                                  QemuClipboardType type)
+{
+    char *text;
+    size_t len;
+
+    if (type != QEMU_CLIPBOARD_TYPE_TEXT) {
+        return;
+    }
+    text = SDL_GetClipboardText();
+    if (text) {
+        len = strlen(text);
+        if (len <= QEMUSDL_MAX_CLIPBOARD_BYTES) {
+            qemu_clipboard_set_data(&sdl_cbpeer, info, type,
+                                    len, text, true);
+        }
+        SDL_free(text);
+    }
+}
+
+static void sdl_clipboard_notify(Notifier *notifier, void *data)
+{
+    QemuClipboardNotify *notify = data;
+    QemuClipboardInfo *info;
+    size_t size;
+    char *utf8;
+
+    if (notify->type != QEMU_CLIPBOARD_UPDATE_INFO) {
+        return;
+    }
+    info = notify->info;
+    if (!info || info->owner == &sdl_cbpeer ||
+        info->selection != QEMU_CLIPBOARD_SELECTION_CLIPBOARD) {
+        return;
+    }
+    if (!info->types[QEMU_CLIPBOARD_TYPE_TEXT].available) {
+        return;
+    }
+    if (info->types[QEMU_CLIPBOARD_TYPE_TEXT].data == NULL) {
+        if (!info->types[QEMU_CLIPBOARD_TYPE_TEXT].requested) {
+            qemu_clipboard_request(info, QEMU_CLIPBOARD_TYPE_TEXT);
+        }
+        return;
+    }
+
+    size = info->types[QEMU_CLIPBOARD_TYPE_TEXT].size;
+    if (size == 0 || size > QEMUSDL_MAX_CLIPBOARD_BYTES) {
+        return;
+    }
+    utf8 = g_strndup((const char *)info->types[QEMU_CLIPBOARD_TYPE_TEXT].data, size);
+    if (utf8 && (!sdl_cb_last_text || strcmp(sdl_cb_last_text, utf8) != 0)) {
+        g_free(sdl_cb_last_text);
+        sdl_cb_last_text = g_strdup(utf8);
+        sdl_cb_setting_host = true;
+        SDL_SetClipboardText(utf8);
+        sdl_cb_setting_host = false;
+    }
+    g_free(utf8);
+}"""
+    text = text.replace(anchor, cb_impl, 1)
+    changed = True
+
+old_resize = """    case SDL_WINDOWEVENT_RESIZED:
+#ifndef __ANDROID__
+        {
+            QemuUIInfo info;
+            memset(&info, 0, sizeof(info));
+            info.width = ev->window.data1;
+            info.height = ev->window.data2;
+            dpy_set_ui_info(scon->dcl.con, &info, true);
+        }
+#endif
+        sdl2_redraw(scon);
+        break;"""
+new_resize = """    case SDL_WINDOWEVENT_RESIZED:
+#ifdef __ANDROID__
+        {
+            const char *auto_resize = getenv("QEMU_SDL_AUTO_RESIZE");
+            if (auto_resize && auto_resize[0] == '1') {
+                int w = ev->window.data1;
+                int h = ev->window.data2;
+                const char *max_dim_env = getenv("QEMU_SDL_MAX_RESIZE_DIM");
+                int max_dim = max_dim_env ? atoi(max_dim_env) : 1600;
+                if (max_dim < 800 || max_dim > 3840) {
+                    max_dim = 1600;
+                }
+                if (w > 0 && h > 0) {
+                    if (w > max_dim || h > max_dim) {
+                        if (w >= h) {
+                            h = (int)(((int64_t)h * max_dim) / w);
+                            w = max_dim;
+                        } else {
+                            w = (int)(((int64_t)w * max_dim) / h);
+                            h = max_dim;
+                        }
+                    }
+                    w = (w / 8) * 8;
+                    h = (h / 8) * 8;
+                    if (w < 640) {
+                        w = 640;
+                    }
+                    if (h < 400) {
+                        h = 400;
+                    }
+                    if (w != sdl_last_auto_w || h != sdl_last_auto_h) {
+                        QemuUIInfo info;
+                        memset(&info, 0, sizeof(info));
+                        info.width = w;
+                        info.height = h;
+                        sdl_last_auto_w = w;
+                        sdl_last_auto_h = h;
+                        dpy_set_ui_info(scon->dcl.con, &info, true);
+                    }
+                }
+            }
+        }
+#else
+        {
+            QemuUIInfo info;
+            memset(&info, 0, sizeof(info));
+            info.width = ev->window.data1;
+            info.height = ev->window.data2;
+            dpy_set_ui_info(scon->dcl.con, &info, true);
+        }
+#endif
+        sdl2_redraw(scon);
+        break;"""
+if old_resize in text:
+    text = text.replace(old_resize, new_resize, 1)
+    changed = True
+
+old_focus = """    case SDL_WINDOWEVENT_FOCUS_GAINED:
+        win32_kbd_set_grab(gui_grab);"""
+new_focus = """    case SDL_WINDOWEVENT_FOCUS_GAINED:
+        sdl_clipboard_sync_from_host();
+        win32_kbd_set_grab(gui_grab);"""
+if "sdl_clipboard_sync_from_host();" not in text or old_focus in text:
+    if old_focus in text:
+        text = text.replace(old_focus, new_focus, 1)
+        changed = True
+
+old_poll = """        case SDL_WINDOWEVENT:
+            handle_windowevent(ev);
+            break;"""
+new_poll = """        case SDL_WINDOWEVENT:
+            handle_windowevent(ev);
+            break;
+        case SDL_CLIPBOARDUPDATE:
+            sdl_clipboard_sync_from_host();
+            break;"""
+if "case SDL_CLIPBOARDUPDATE:" not in text:
+    assert old_poll in text, "Expected SDL_WINDOWEVENT in sdl2_poll_events"
+    text = text.replace(old_poll, new_poll, 1)
+    changed = True
+
+old_cleanup = """static void sdl_cleanup(void)
+{
+    if (guest_sprite) {"""
+new_cleanup = """static void sdl_cleanup(void)
+{
+    if (sdl_cb_registered) {
+        qemu_clipboard_peer_unregister(&sdl_cbpeer);
+        sdl_cb_registered = false;
+    }
+    g_clear_pointer(&sdl_cb_last_text, g_free);
+    if (guest_sprite) {"""
+if "qemu_clipboard_peer_unregister(&sdl_cbpeer);" not in text:
+    assert old_cleanup in text, "Expected sdl_cleanup in ui/sdl2.c"
+    text = text.replace(old_cleanup, new_cleanup, 1)
+    changed = True
+
+old_init = """    mouse_mode_notifier.notify = sdl_mouse_mode_change;
+    qemu_add_mouse_mode_change_notifier(&mouse_mode_notifier);"""
+new_init = """    mouse_mode_notifier.notify = sdl_mouse_mode_change;
+    qemu_add_mouse_mode_change_notifier(&mouse_mode_notifier);
+
+    if (!sdl_cb_registered) {
+        sdl_cbpeer.name = "sdl2";
+        sdl_cbpeer.notifier.notify = sdl_clipboard_notify;
+        sdl_cbpeer.request = sdl_clipboard_request;
+        qemu_clipboard_peer_register(&sdl_cbpeer);
+        sdl_cb_registered = true;
+    }"""
+if "qemu_clipboard_peer_register(&sdl_cbpeer);" not in text:
+    assert old_init in text, "Expected mouse_mode_notifier registration in ui/sdl2.c"
+    text = text.replace(old_init, new_init, 1)
+    changed = True
+
+if changed:
+    open(path, "w", encoding="utf-8").write(text)
+    print("Patched ui/sdl2.c with SDL2 <-> QEMU clipboard bridge and opt-in auto-resize.")
+else:
+    print("ui/sdl2.c clipboard bridge and auto-resize already patched.")
+PYEOF
+
 # Apply Android AArch64 AAPCS64 coroutine backend (avoids Bionic 14+ PAC/longjmp SIGILL)
 if [[ -f "$SCRIPT_DIR/patches/coroutine-sigaltstack-android.c" ]]; then
   cp -f "$SCRIPT_DIR/patches/coroutine-sigaltstack-android.c" "$QEMU_SRC/util/coroutine-sigaltstack.c"
@@ -837,6 +1140,8 @@ MESON="$(which meson)" \
   --target-list=x86_64-softmmu,aarch64-softmmu,ppc-softmmu \
   --prefix="$PREFIX" \
   --enable-sdl \
+  --enable-spice-protocol \
+  --disable-spice \
   --disable-vnc \
   --disable-gtk \
   --disable-curses \
@@ -859,7 +1164,7 @@ MESON="$(which meson)" \
   --disable-vhost-crypto \
   --disable-vhost-vdpa \
   --disable-vduse-blk-export \
-  --disable-virtfs \
+  --enable-virtfs \
   --disable-capstone \
   --enable-fdt=internal \
   --disable-debug-info \

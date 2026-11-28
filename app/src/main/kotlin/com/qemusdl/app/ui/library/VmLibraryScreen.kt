@@ -47,6 +47,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.DeveloperBoard
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Link
@@ -135,6 +136,7 @@ fun VmLibraryScreen(
     onBootVmSideBySide: ((VmConfig) -> Unit)? = null,
     onOpenIsoDownloader: () -> Unit,
     onOpenRuntimeSetup: () -> Unit,
+    onOpenAbout: () -> Unit = {},
     formFactor: AppFormFactor = AppFormFactor.PHONE,
     selectedVmId: String? = null,
     onSelectVm: ((String) -> Unit)? = null
@@ -221,6 +223,18 @@ fun VmLibraryScreen(
                                 Icon(
                                     imageVector = Icons.Rounded.Storage,
                                     contentDescription = "Runtime and virtual disks"
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        AppTooltipBox(tooltip = "About & updates") {
+                            FilledTonalIconButton(
+                                onClick = onOpenAbout,
+                                modifier = Modifier.desktopHandCursor()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Info,
+                                    contentDescription = "About and updates"
                                 )
                             }
                         }

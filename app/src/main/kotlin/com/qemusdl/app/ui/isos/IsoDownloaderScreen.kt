@@ -208,9 +208,14 @@ fun IsoDownloaderScreen(
                             autoAttachVmId = targetVmId,
                             onComplete = { file ->
                                 scope.launch {
-                                    snackbarHostState.showSnackbar("Downloaded ${file.name}")
+                                    val msg = if (entry.isDriverTools && targetVmId != null) {
+                                        "Downloaded & attached ${file.name} as CD-ROM #2"
+                                    } else {
+                                        "Downloaded ${file.name}"
+                                    }
+                                    snackbarHostState.showSnackbar(msg)
                                 }
-                                if (targetVmId != null) {
+                                if (targetVmId != null && !entry.isDriverTools) {
                                     onIsoSelectedForVm(file.absolutePath, file.name)
                                 }
                             },
@@ -222,8 +227,15 @@ fun IsoDownloaderScreen(
                     onCancel = { viewModel.cancelIsoDownload(entry.id) },
                     onAttach = { path, name ->
                         if (targetVmId != null) {
-                            viewModel.attachIsoToVm(targetVmId, path, name)
-                            onIsoSelectedForVm(path, name)
+                            if (entry.isDriverTools) {
+                                viewModel.attachVirtioDriversIsoToVm(targetVmId, path)
+                                scope.launch {
+                                    snackbarHostState.showSnackbar("Attached VirtIO Drivers ISO as CD-ROM #2")
+                                }
+                            } else {
+                                viewModel.attachIsoToVm(targetVmId, path, name)
+                                onIsoSelectedForVm(path, name)
+                            }
                         }
                     }
                 )
@@ -423,11 +435,19 @@ private fun IsoCatalogCard(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(100),
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        color = if (entry.isDriverTools) {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        },
+                        contentColor = if (entry.isDriverTools) {
+                            MaterialTheme.colorScheme.onTertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        }
                     ) {
                         Text(
-                            text = entry.preset.badgeText,
+                            text = if (entry.isDriverTools) "DRIVERS & TOOLS" else entry.preset.badgeText,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                             style = MaterialTheme.typography.labelMedium
                         )
@@ -437,8 +457,13 @@ private fun IsoCatalogCard(
                         color = MaterialTheme.colorScheme.surfaceContainerHighest,
                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                     ) {
+                        val archLabel = if (entry.supportedArchitectures.size > 1) {
+                            entry.supportedArchitectures.joinToString(" · ") { it.badgeText }
+                        } else {
+                            entry.architecture.badgeText
+                        }
                         Text(
-                            text = entry.architecture.badgeText,
+                            text = archLabel,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                             style = MaterialTheme.typography.labelMedium
                         )
@@ -478,7 +503,7 @@ private fun IsoCatalogCard(
                             Button(onClick = { onAttach(downloadedPath, entry.targetFileName) }) {
                                 Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text("Attach to VM")
+                                Text(if (entry.isDriverTools) "Attach as CD-ROM #2" else "Attach to VM")
                             }
                         } else {
                             FilledTonalButton(onClick = onDownload) {
@@ -491,7 +516,13 @@ private fun IsoCatalogCard(
                         Button(onClick = onDownload) {
                             Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(if (canAttachToVm) "Download & Attach" else "Download ISO")
+                            Text(
+                                when {
+                                    canAttachToVm && entry.isDriverTools -> "Download & Attach CD #2"
+                                    canAttachToVm -> "Download & Attach"
+                                    else -> "Download ISO"
+                                }
+                            )
                         }
                     }
                 }

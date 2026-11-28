@@ -31,11 +31,14 @@ object QemuCommandBuilder {
         config: VmConfig,
         resolvedDiskPath: String? = null,
         resolvedIsoPath: String? = null,
+        resolvedVirtioIsoPath: String? = null,
         firmwareDir: String? = null,
         edk2CodePath: String? = null,
         edk2VarsPath: String? = null,
         activeUsbDeviceFds: Map<String, Int> = emptyMap(),
-        tcgTbSizeMb: Int = DEFAULT_TCG_TB_SIZE_MB
+        tcgTbSizeMb: Int = DEFAULT_TCG_TB_SIZE_MB,
+        guestAgentSocketPath: String? = null,
+        virtio9pHostPath: String? = null
     ): List<String> {
         val args = mutableListOf<String>()
         val arch = config.architecture
@@ -318,6 +321,58 @@ object QemuCommandBuilder {
                     args += listOf("-cdrom", isoTarget)
                 }
             }
+        }
+
+        // Secondary CD-ROM: Open-source VirtIO Drivers & Guest Tools ISO (virtio-win.iso)
+        val virtioIsoTarget = (resolvedVirtioIsoPath ?: config.virtioDriversIsoPath).trim()
+        if (config.attachVirtioDriversIso && virtioIsoTarget.isNotEmpty()) {
+            if (arch == GuestArchitecture.X86_64) {
+                // Secondary IDE/AHCI slave slot (index=3) works alongside -cdrom (index=2) on both Q35 and i440FX
+                args += listOf(
+                    "-drive",
+                    "file=$virtioIsoTarget,if=ide,index=3,format=raw,media=cdrom,readonly=on"
+                )
+            } else if (arch == GuestArchitecture.AARCH64) {
+                // Attach via USB mass storage on qemu-xhci so Windows 11 ARM64 Setup sees VirtIO drivers with zero extra storage drivers
+                args += listOf(
+                    "-drive", "id=virtiocd,file=$virtioIsoTarget,if=none,format=raw,readonly=on,media=cdrom",
+                    "-device", "usb-storage,bus=xhci.0,drive=virtiocd,removable=on"
+                )
+            }
+        }
+
+        // Shared virtio-serial-pci controller for QEMU Guest Agent and/or SPICE qemu-vdagent clipboard
+        val qgaSocket = guestAgentSocketPath?.trim().orEmpty()
+        val attachQga = arch != GuestArchitecture.PPC && config.guestAgentEnabled && qgaSocket.isNotEmpty()
+        val attachSpiceClipboard = arch != GuestArchitecture.PPC && config.spiceClipboardEnabled
+        if (attachQga || attachSpiceClipboard) {
+            args += listOf("-device", "virtio-serial-pci,id=virtio-serial0")
+        }
+
+        // QEMU Guest Agent (org.qemu.guest_agent.0) for graceful shutdown, clock sync & live telemetry
+        if (attachQga) {
+            args += listOf(
+                "-chardev", "socket,path=$qgaSocket,server=on,wait=off,id=qga0",
+                "-device", "virtserialport,bus=virtio-serial0.0,chardev=qga0,name=org.qemu.guest_agent.0"
+            )
+        }
+
+        // Built-in SPICE qemu-vdagent chardev (com.redhat.spice.0) for bidirectional Android <-> guest clipboard
+        // Keep mouse=off so SDL2 / usb-tablet pointer handling remains authoritative.
+        if (attachSpiceClipboard) {
+            args += listOf(
+                "-chardev", "qemu-vdagent,id=vdagent0,name=vdagent,clipboard=on,mouse=off",
+                "-device", "virtserialport,bus=virtio-serial0.0,chardev=vdagent0,name=com.redhat.spice.0"
+            )
+        }
+
+        // VirtIO-9p native Linux shared folder (security_model=none works cleanly on Android FUSE/sdcardfs)
+        val ninePPath = virtio9pHostPath?.trim().orEmpty()
+        if (arch != GuestArchitecture.PPC && config.virtio9pEnabled && ninePPath.isNotEmpty()) {
+            args += listOf(
+                "-fsdev", "local,id=fsdev0,path=$ninePPath,security_model=none",
+                "-device", "virtio-9p-pci,fsdev=fsdev0,mount_tag=hostshare"
+            )
         }
 
         // Networking (user-mode SLIRP — requires no root or TUN device on Android)

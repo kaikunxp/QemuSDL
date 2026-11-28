@@ -603,15 +603,19 @@ public class SDLActivity extends ComponentActivity implements View.OnSystemUiVis
             // Send Quit event to "SDLThread" thread
             SDLActivity.nativeSendQuit();
 
-            // Wait for "SDLThread" thread to end
+            // Wait briefly for "SDLThread" to exit. QEMU runs with window-close=off so it
+            // ignores SDL_QUIT; bounding the join prevents onDestroy() from deadlocking the
+            // isolated :qemu_vm process main thread and blocking future VM launches.
             try {
-                SDLActivity.mSDLThread.join();
+                SDLActivity.mSDLThread.join(250L);
             } catch(Exception e) {
                 Log.v(TAG, "Problem stopping SDLThread: " + e);
             }
         }
 
-        SDLActivity.nativeQuit();
+        if (SDLActivity.mSDLThread == null || !SDLActivity.mSDLThread.isAlive()) {
+            SDLActivity.nativeQuit();
+        }
 
         super.onDestroy();
     }
@@ -706,7 +710,7 @@ public class SDLActivity extends ComponentActivity implements View.OnSystemUiVis
 
         // Try a transition to resumed state
         if (mNextNativeState == NativeState.RESUMED) {
-            if (mSurface.mIsSurfaceReady && mHasFocus && mIsResumedCalled) {
+            if (mSurface != null && mSurface.mIsSurfaceReady && (mHasFocus || mHasMultiWindow) && mIsResumedCalled) {
                 if (mSDLThread == null) {
                     // This is the entry point to the C app.
                     // Start up the C app thread and enable sensor input for the first time

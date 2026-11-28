@@ -45,7 +45,9 @@ data class IsoCatalogEntry(
     val primaryUrl: String,
     val regexPattern: String? = null,
     val baseDownloadUrl: String? = null,
-    val extractIsoFromZip: Boolean = false
+    val extractIsoFromZip: Boolean = false,
+    val isDriverTools: Boolean = false,
+    val supportedArchitectures: Set<GuestArchitecture> = setOf(architecture)
 )
 
 sealed interface IsoDownloadState {
@@ -227,13 +229,30 @@ object IsoCatalog {
             targetFileName = "macos_921_ppc.iso",
             resolveStrategy = IsoResolveStrategy.DIRECT_URL,
             primaryUrl = "https://archive.org/download/os-9-install-cd/macos_921_ppc.iso"
+        ),
+        // Open-Source VirtIO Drivers & Guest Tools ISO (Windows x64 & ARM64)
+        IsoCatalogEntry(
+            id = VIRTIO_WIN_ENTRY_ID,
+            title = "VirtIO Drivers & Guest Tools (Windows)",
+            subtitle = "Official Fedora signed VirtIO drivers (viostor, NetKVM, viogpudo) + QEMU Guest Agent & SPICE vdagent installer for x64 & ARM64",
+            approxSizeLabel = "~700 MB",
+            preset = OsPreset.WINDOWS,
+            architecture = GuestArchitecture.X86_64,
+            targetFileName = VIRTIO_WIN_FILENAME,
+            resolveStrategy = IsoResolveStrategy.DIRECT_URL,
+            primaryUrl = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso",
+            isDriverTools = true,
+            supportedArchitectures = setOf(GuestArchitecture.X86_64, GuestArchitecture.AARCH64)
         )
     )
+
+    const val VIRTIO_WIN_ENTRY_ID = "virtio-win-stable"
+    const val VIRTIO_WIN_FILENAME = "virtio-win-stable.iso"
 
     fun findById(id: String?): IsoCatalogEntry? = entries.firstOrNull { it.id == id }
 
     fun entriesForArch(arch: GuestArchitecture?): List<IsoCatalogEntry> =
-        if (arch == null) entries else entries.filter { it.architecture == arch }
+        if (arch == null) entries else entries.filter { arch in it.supportedArchitectures }
 
     fun recommendedForPreset(preset: OsPreset, arch: GuestArchitecture = preset.defaultArch): IsoCatalogEntry = when (preset) {
         OsPreset.LINUX_ALPINE -> findById("alpine-virt-x86_64") ?: entries.first()
@@ -727,6 +746,11 @@ class IsoDownloader(context: Context) {
 
         @Volatile
         private var instance: IsoDownloader? = null
+
+        fun findVirtioDriversIso(context: Context): File? {
+            val file = File(File(context.applicationContext.filesDir, "isos"), IsoCatalog.VIRTIO_WIN_FILENAME)
+            return if (file.exists() && file.length() > 0L) file else null
+        }
 
         fun getInstance(context: Context): IsoDownloader =
             instance ?: synchronized(this) {

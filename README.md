@@ -4,7 +4,7 @@
   <p><strong>Android x86_64, AArch64 &amp; PowerPC QEMU VM Runner with Native SDL2 Viewport</strong></p>
   <p>
     <img src="https://img.shields.io/badge/Vibe_Coded-100%25_AI_Generated-8A2BE2?style=for-the-badge" alt="Vibe Coded" />
-    <img src="https://img.shields.io/badge/Version-1.3.0-2E7D32?style=for-the-badge" alt="Version 1.3.0" />
+    <img src="https://img.shields.io/badge/Version-1.4.0-2E7D32?style=for-the-badge" alt="Version 1.4.0" />
     <img src="https://img.shields.io/badge/Android-API_31--37-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Platform" />
     <img src="https://img.shields.io/badge/QEMU-x86__64_%7C_AArch64_%7C_PPC-FF6600?style=for-the-badge" alt="Architectures" />
     <img src="https://img.shields.io/badge/Display-Native_SDL2_%2B_GLES3-00B4D8?style=for-the-badge" alt="Renderer" />
@@ -148,6 +148,20 @@ flowchart TD
 
 ---
 
+## Guest Tools, Clipboard & File Sharing (VirtIO + SPICE)
+
+QemuSDL v1.4 ships full open-source VirtIO & SPICE guest integration out of the box without any proprietary dependencies:
+
+- **One-Tap `virtio-win.iso` Drivers CD (CD-ROM #2)**: Download Fedora's signed open-source `virtio-win.iso` directly from the ISO Catalog or VM Editor and attach it automatically alongside your Windows install ISO (`VirtIO-Block`, `VirtIO-Net`, `VirtIO-GPU`, `QXL`, `VirtIO-Serial`, plus `virtio-win-guest-tools.exe`).
+- **QEMU Guest Agent (`org.qemu.guest_agent.0`)**: Connects over a shared `virtio-serial-pci` controller to provide **graceful OS shutdown**, **automatic guest clock sync** on VM connect/resume, and live **OS / hostname / IP telemetry** in the Monitor Sheet.
+- **Bidirectional Clipboard (`qemu-vdagent` → `com.redhat.spice.0`)**: Built into QEMU via header-only `spice-protocol` and bridged directly to Android's clipboard through SDL2 (`SDL_CLIPBOARDUPDATE` + focus re-sync) — works with `spice-vdagent` on Linux and `virtio-win-guest-tools.exe` on Windows.
+- **Dynamic Guest Display Auto-Resize**: Opt-in per-VM auto-resize (`QEMU_SDL_AUTO_RESIZE`) automatically requests an aspect-preserving, 8 px-aligned guest mode (capped at 1600 px for smooth TCG performance) when rotating, unfolding, or resizing the window.
+- **Host ↔ Guest Shared Folders (WebDAV/HTTP + VirtIO-9p)**:
+  - **WebDAV / HTTP (`http://10.0.2.2:<port>/`)**: Universal localhost-only file server (supports browser drag-and-drop upload/download and WebDAV network drive mounting across Windows, Linux, and retro guests).
+  - **VirtIO-9p (`hostshare`)**: Native zero-network Linux kernel mount (`mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host`), with a 1-tap mount command helper in the Monitor Sheet.
+
+---
+
 ## Hardware 3D GPU Acceleration: Venus Vulkan Protocol
 
 Traditional virtual machine acceleration relies on desktop OpenGL translation (`virgl`), which struggles on mobile because Android does not provide desktop `libGL.so`. **QemuSDL** implements the **Venus Vulkan protocol** (`virglrenderer` v1.0+ with `venus=true`) for x86_64 (`virtio-vga-gl`) and AArch64 (`virtio-gpu-gl-pci`) guests:
@@ -246,7 +260,7 @@ While a virtual machine is running in either the full native `QemuSdlActivity` (
 │   ├── jniLibs/arm64-v8a/             # Bundled -O3 stripped libSDL2.so, libusb-1.0.so & libqemu-system-{x86_64,aarch64,ppc}.so
 │   └── kotlin/com/qemusdl/app/
 │       ├── data/                      # GuestArchitecture, VmConfig, SdlScalingMode, MouseEmulationMode, VmRepository
-│       ├── qemu/                      # QemuCommandBuilder (-display sdl), IsoDownloader, IsoDownloadForegroundService, DiskImageCreator
+│       ├── qemu/                      # QemuCommandBuilder (-display sdl), QemuGuestAgentClient, GuestSharedFolderServer, IsoDownloader, DiskImageCreator
 │       ├── sdl/                       # NativeQemuBridge, SdlSurfaceView, SdlScancodeMapper
 │       └── ui/
 │           ├── adaptive/              # 3-tier form factor resolver (Phone / Foldable-Tablet / GooglebookOS Desktop), tooltips & hover cursors

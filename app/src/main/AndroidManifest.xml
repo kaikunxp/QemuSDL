@@ -70,11 +70,12 @@
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
             android:exported="false"
             android:hardwareAccelerated="true"
+            android:launchMode="singleTask"
             android:preferMinimalPostProcessing="true"
             android:process=":qemu_vm"
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
-            android:theme="@style/Theme.QemuSDL" />
+            android:theme="@style/Theme.QemuSDL.Viewport" />
 
         <!-- Fallback OpenGL ES 3.0 SDL2-compatible interactive viewport (when ABI lacks native QEMU .so) -->
         <activity
@@ -84,7 +85,7 @@
             android:hardwareAccelerated="true"
             android:launchMode="singleTask"
             android:resizeableActivity="true"
-            android:theme="@style/Theme.QemuSDL" />
+            android:theme="@style/Theme.QemuSDL.Viewport" />
 
         <!-- Keeps ISO downloads alive with CPU/Wi-Fi locks when the device screen sleeps -->
         <service

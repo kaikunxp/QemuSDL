@@ -339,4 +339,117 @@ class QemuCommandBuilderTest {
         assertTrue(args.contains("-usb"))
         assertTrue(args.contains("usb-audio,audiodev=snd0"))
     }
+
+    @Test
+    fun buildArgs_x86_64AttachesVirtioDriversSecondCdromAndGuestAgent() {
+        val vm = VmConfig(
+            name = "Windows 11 x64",
+            architecture = com.qemusdl.app.data.GuestArchitecture.X86_64,
+            osPreset = com.qemusdl.app.data.OsPreset.WINDOWS,
+            attachVirtioDriversIso = true,
+            guestAgentEnabled = true
+        )
+
+        val args = QemuCommandBuilder.buildArgs(
+            config = vm,
+            resolvedDiskPath = "/data/disks/win11.qcow2",
+            resolvedIsoPath = "/data/isos/win11.iso",
+            resolvedVirtioIsoPath = "/data/isos/virtio-win-stable.iso",
+            guestAgentSocketPath = "/cache/qga_win11.sock"
+        )
+
+        assertTrue(args.contains("-cdrom"))
+        assertTrue(args.contains("/data/isos/win11.iso"))
+        assertTrue(
+            args.contains("file=/data/isos/virtio-win-stable.iso,if=ide,index=3,format=raw,media=cdrom,readonly=on")
+        )
+        assertTrue(args.contains("virtio-serial-pci,id=virtio-serial0"))
+        assertTrue(args.contains("socket,path=/cache/qga_win11.sock,server=on,wait=off,id=qga0"))
+        assertTrue(args.contains("virtserialport,bus=virtio-serial0.0,chardev=qga0,name=org.qemu.guest_agent.0"))
+    }
+
+    @Test
+    fun buildArgs_aarch64AttachesVirtioDriversViaUsbStorageAndGuestAgent() {
+        val vm = VmConfig(
+            name = "Windows 11 ARM64",
+            architecture = com.qemusdl.app.data.GuestArchitecture.AARCH64,
+            osPreset = com.qemusdl.app.data.OsPreset.WINDOWS_AARCH64,
+            machineType = MachineType.VIRT,
+            displayDevice = DisplayDevice.RAMFB,
+            attachVirtioDriversIso = true,
+            guestAgentEnabled = true
+        )
+
+        val args = QemuCommandBuilder.buildArgs(
+            config = vm,
+            resolvedDiskPath = "/data/disks/win11_arm.qcow2",
+            resolvedIsoPath = "/data/isos/win11_arm.iso",
+            resolvedVirtioIsoPath = "/data/isos/virtio-win-stable.iso",
+            guestAgentSocketPath = "/cache/qga_arm.sock"
+        )
+
+        assertTrue(
+            args.contains("id=virtiocd,file=/data/isos/virtio-win-stable.iso,if=none,format=raw,readonly=on,media=cdrom")
+        )
+        assertTrue(args.contains("usb-storage,bus=xhci.0,drive=virtiocd,removable=on"))
+        assertTrue(args.contains("virtio-serial-pci,id=virtio-serial0"))
+        assertTrue(args.contains("virtserialport,bus=virtio-serial0.0,chardev=qga0,name=org.qemu.guest_agent.0"))
+    }
+
+    @Test
+    fun buildArgs_ppcOmitsVirtioDriversIsoAndGuestAgent() {
+        val vm = VmConfig(
+            name = "Mac OS 9",
+            architecture = com.qemusdl.app.data.GuestArchitecture.PPC,
+            osPreset = com.qemusdl.app.data.OsPreset.MACOS_9,
+            machineType = MachineType.MAC99_PMU,
+            displayDevice = DisplayDevice.STD,
+            attachVirtioDriversIso = true,
+            guestAgentEnabled = true,
+            spiceClipboardEnabled = true,
+            virtio9pEnabled = true
+        )
+
+        val args = QemuCommandBuilder.buildArgs(
+            config = vm,
+            resolvedVirtioIsoPath = "/data/isos/virtio-win-stable.iso",
+            guestAgentSocketPath = "/cache/qga_ppc.sock",
+            virtio9pHostPath = "/data/shared"
+        )
+
+        assertFalse(args.any { it.contains("virtio-win-stable.iso") })
+        assertFalse(args.any { it.contains("org.qemu.guest_agent.0") })
+        assertFalse(args.any { it.contains("com.redhat.spice.0") })
+        assertFalse(args.any { it.contains("qemu-vdagent") })
+        assertFalse(args.any { it.contains("virtio-9p-pci") })
+        assertFalse(args.any { it.contains("virtio-serial-pci") })
+    }
+
+    @Test
+    fun buildArgs_attachesSpiceClipboardAndVirtio9pSharingSingleVirtioSerialController() {
+        val vm = VmConfig(
+            name = "Debian ARM64",
+            architecture = com.qemusdl.app.data.GuestArchitecture.AARCH64,
+            osPreset = com.qemusdl.app.data.OsPreset.LINUX_DEBIAN_AARCH64,
+            machineType = MachineType.VIRT,
+            displayDevice = DisplayDevice.VIRTIO_GPU_PCI,
+            guestAgentEnabled = true,
+            spiceClipboardEnabled = true,
+            virtio9pEnabled = true
+        )
+
+        val args = QemuCommandBuilder.buildArgs(
+            config = vm,
+            guestAgentSocketPath = "/cache/qga_deb.sock",
+            virtio9pHostPath = "/storage/shared_folder"
+        )
+
+        // Single shared virtio-serial-pci controller for both QGA and SPICE vdagent
+        assertEquals(1, args.count { it == "virtio-serial-pci,id=virtio-serial0" })
+        assertTrue(args.contains("virtserialport,bus=virtio-serial0.0,chardev=qga0,name=org.qemu.guest_agent.0"))
+        assertTrue(args.contains("qemu-vdagent,id=vdagent0,name=vdagent,clipboard=on,mouse=off"))
+        assertTrue(args.contains("virtserialport,bus=virtio-serial0.0,chardev=vdagent0,name=com.redhat.spice.0"))
+        assertTrue(args.contains("local,id=fsdev0,path=/storage/shared_folder,security_model=none"))
+        assertTrue(args.contains("virtio-9p-pci,fsdev=fsdev0,mount_tag=hostshare"))
+    }
 }

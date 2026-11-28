@@ -91,4 +91,21 @@ class IsoCatalogTest {
         org.junit.Assert.assertFalse(IsoDownloadState.Failed("network").isActiveDownload)
         org.junit.Assert.assertFalse(IsoDownloadState.Completed("/tmp/test.iso", "test.iso").isActiveDownload)
     }
+
+    @Test
+    fun virtioWinDriversIsoSupportsX86AndAarch64ButNotPpc() {
+        val virtio = IsoCatalog.findById(IsoCatalog.VIRTIO_WIN_ENTRY_ID)
+        assertNotNull(virtio)
+        org.junit.Assert.assertTrue(virtio!!.isDriverTools)
+        assertEquals(IsoCatalog.VIRTIO_WIN_FILENAME, virtio.targetFileName)
+        org.junit.Assert.assertTrue(
+            IsoCatalog.entriesForArch(com.qemusdl.app.data.GuestArchitecture.X86_64).any { it.id == IsoCatalog.VIRTIO_WIN_ENTRY_ID }
+        )
+        org.junit.Assert.assertTrue(
+            IsoCatalog.entriesForArch(com.qemusdl.app.data.GuestArchitecture.AARCH64).any { it.id == IsoCatalog.VIRTIO_WIN_ENTRY_ID }
+        )
+        org.junit.Assert.assertFalse(
+            IsoCatalog.entriesForArch(com.qemusdl.app.data.GuestArchitecture.PPC).any { it.id == IsoCatalog.VIRTIO_WIN_ENTRY_ID }
+        )
+    }
 }

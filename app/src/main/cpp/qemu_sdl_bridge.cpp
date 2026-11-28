@@ -650,4 +650,52 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeSyncSdlViewport(
     return (static_cast<jlong>(logicalW) << 32) | (static_cast<jlong>(logicalH) & 0xFFFFFFFFLL);
 }
 
+JNIEXPORT void JNICALL
+Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeNotifySdlExposed(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/
+) {
+    using GetWindowFromIdFn = void* (*)(uint32_t);
+    using GetWindowIdFn = uint32_t (*)(void*);
+    using PushEventFn = int (*)(void*);
+
+    static auto fnGetWin = reinterpret_cast<GetWindowFromIdFn>(dlsym(RTLD_DEFAULT, "SDL_GetWindowFromID"));
+    static auto fnGetWinId = reinterpret_cast<GetWindowIdFn>(dlsym(RTLD_DEFAULT, "SDL_GetWindowID"));
+    static auto fnPushEvent = reinterpret_cast<PushEventFn>(dlsym(RTLD_DEFAULT, "SDL_PushEvent"));
+
+    if (!fnGetWin || !fnGetWinId || !fnPushEvent) {
+        return;
+    }
+
+    void* window = nullptr;
+    for (uint32_t id = 1; id <= 8; ++id) {
+        window = fnGetWin(id);
+        if (window != nullptr) break;
+    }
+    if (!window) {
+        return;
+    }
+
+    // Matches SDL2's SDL_WindowEvent (first 24 bytes of 56-byte SDL_Event union).
+    // SDL_WINDOWEVENT = 0x200, SDL_WINDOWEVENT_EXPOSED = 3.
+    struct alignas(8) SdlWindowEventCompat {
+        uint32_t type;
+        uint32_t timestamp;
+        uint32_t windowID;
+        uint8_t event;
+        uint8_t padding1;
+        uint8_t padding2;
+        uint8_t padding3;
+        int32_t data1;
+        int32_t data2;
+        uint8_t tailPadding[40];
+    };
+
+    SdlWindowEventCompat ev {};
+    ev.type = 0x200U;
+    ev.windowID = fnGetWinId(window);
+    ev.event = 3U; // SDL_WINDOWEVENT_EXPOSED -> triggers sdl2_redraw(scon) in QEMU
+    fnPushEvent(&ev);
+}
+
 } // extern "C"

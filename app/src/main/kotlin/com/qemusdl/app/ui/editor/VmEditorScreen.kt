@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
@@ -95,10 +96,14 @@ import com.qemusdl.app.data.OsPreset
 import com.qemusdl.app.data.SdlScalingMode
 import com.qemusdl.app.data.VmConfig
 import com.qemusdl.app.qemu.DiskFormat
+import com.qemusdl.app.qemu.GuestSharedFolderServer
+import com.qemusdl.app.qemu.IsoCatalog
+import com.qemusdl.app.qemu.IsoDownloadState
 import com.qemusdl.app.qemu.QemuCommandBuilder
 import com.qemusdl.app.ui.adaptive.AppTooltipBox
 import com.qemusdl.app.ui.adaptive.desktopHandCursor
 import com.qemusdl.app.ui.adaptive.desktopTextCursor
+import com.qemusdl.app.ui.isos.DownloadStateSection
 import com.qemusdl.app.ui.library.VmLibraryViewModel
 import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
@@ -128,6 +133,7 @@ fun VmEditorScreen(
     val existing = remember(vmId, allVms) { vmId?.let { id -> allVms.firstOrNull { it.id == id } } }
     val localDisks by viewModel.disks.collectAsState()
     val downloadedIsos by viewModel.downloadedIsos.collectAsState()
+    val isoDownloadStates by viewModel.isoDownloadStates.collectAsState()
 
     var config by rememberSaveable(vmId, existing?.id, stateSaver = VmConfigSaver) {
         mutableStateOf(existing ?: VmConfig(name = "New Virtual Machine"))
@@ -725,6 +731,141 @@ fun VmEditorScreen(
                 }
             }
 
+            // VirtIO Drivers, Guest Agent & Shared Folder
+            item {
+                val virtioEntry = remember { IsoCatalog.findById(IsoCatalog.VIRTIO_WIN_ENTRY_ID) }
+                val downloadedVirtio = downloadedIsos.firstOrNull { it.name == IsoCatalog.VIRTIO_WIN_FILENAME }
+                val virtioDownloadState = isoDownloadStates[IsoCatalog.VIRTIO_WIN_ENTRY_ID] ?: IsoDownloadState.Idle
+                val sharedDirPath = remember(context) {
+                    GuestSharedFolderServer.defaultSharedDirectory(context).absolutePath
+                }
+
+                EditorSectionCard(title = "Guest Tools & File Sharing", icon = Icons.Rounded.Build) {
+                    if (config.architecture != GuestArchitecture.PPC) {
+                        SwitchRow(
+                            title = "Attach VirtIO Drivers ISO (CD-ROM #2)",
+                            subtitle = if (downloadedVirtio != null) {
+                                "Ready: ${downloadedVirtio.name} — mounts alongside OS ISO with signed Windows VirtIO drivers, QGA & SPICE tools"
+                            } else {
+                                "Mounts Fedora's open-source virtio-win.iso on a 2nd CD-ROM for Windows x64/ARM64 VirtIO drivers & guest tools"
+                            },
+                            checked = config.attachVirtioDriversIso,
+                            onCheckedChange = { enabled ->
+                                config = config.copy(
+                                    attachVirtioDriversIso = enabled,
+                                    virtioDriversIsoPath = if (enabled) {
+                                        config.virtioDriversIsoPath.ifBlank { downloadedVirtio?.path.orEmpty() }
+                                    } else {
+                                        config.virtioDriversIsoPath
+                                    }
+                                )
+                            }
+                        )
+
+                        if (config.attachVirtioDriversIso && downloadedVirtio == null && virtioEntry != null) {
+                            Spacer(Modifier.height(6.dp))
+                            DownloadStateSection(
+                                state = virtioDownloadState,
+                                onCancel = { viewModel.cancelIsoDownload(virtioEntry.id) }
+                            )
+                            if (!virtioDownloadState.isActiveDownload) {
+                                FilledTonalButton(
+                                    onClick = {
+                                        viewModel.startIsoDownload(
+                                            entry = virtioEntry,
+                                            onComplete = { file ->
+                                                config = config.copy(
+                                                    attachVirtioDriversIso = true,
+                                                    virtioDriversIsoPath = file.absolutePath
+                                                )
+                                            }
+                                        )
+                                    },
+                                    modifier = Modifier.desktopHandCursor()
+                                ) {
+                                    Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Download virtio-win.iso (${virtioEntry.approxSizeLabel})")
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        SwitchRow(
+                            title = "QEMU Guest Agent (org.qemu.guest_agent.0)",
+                            subtitle = "Exposes virtio-serial channel for graceful OS shutdown, automatic clock sync on resume, and live OS/IP telemetry (install qemu-guest-agent in guest)",
+                            checked = config.guestAgentEnabled,
+                            onCheckedChange = { config = config.copy(guestAgentEnabled = it) }
+                        )
+
+                        SwitchRow(
+                            title = "Bidirectional Clipboard (SPICE qemu-vdagent)",
+                            subtitle = "Shares text clipboard between Android and guest over com.redhat.spice.0 — install spice-vdagent in Linux or virtio-win-guest-tools.exe in Windows",
+                            checked = config.spiceClipboardEnabled,
+                            onCheckedChange = { config = config.copy(spiceClipboardEnabled = it) }
+                        )
+
+                        SwitchRow(
+                            title = "Dynamic Guest Display Auto-Resize",
+                            subtitle = "Automatically requests a matching guest display mode when rotating, unfolding, or resizing the window (VirtIO-GPU / QXL, capped at 1600px for smooth TCG)",
+                            checked = config.dynamicDisplayResize,
+                            onCheckedChange = { config = config.copy(dynamicDisplayResize = it) }
+                        )
+
+                        SwitchRow(
+                            title = "VirtIO-9p Native Linux Shared Folder (hostshare)",
+                            subtitle = "Exposes the shared Android folder directly to Linux guests via virtio-9p-pci (no network required; mount tag: hostshare)",
+                            checked = config.virtio9pEnabled,
+                            onCheckedChange = { config = config.copy(virtio9pEnabled = it) }
+                        )
+                    }
+
+                    SwitchRow(
+                        title = "Host ↔ Guest Shared Folder (WebDAV / HTTP)",
+                        subtitle = "Runs a localhost-only WebDAV/HTTP file server while this VM is running — mount http://10.0.2.2:${config.sharedFolderPort}/ in Windows, Linux, or any guest browser",
+                        checked = config.sharedFolderEnabled,
+                        onCheckedChange = { config = config.copy(sharedFolderEnabled = it) }
+                    )
+                    val show9pInfo = config.virtio9pEnabled && config.architecture != GuestArchitecture.PPC
+                    if (config.sharedFolderEnabled || show9pInfo) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (config.sharedFolderEnabled) {
+                                    Text(
+                                        text = "WebDAV / HTTP: http://10.0.2.2:${config.sharedFolderPort}/",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                if (show9pInfo) {
+                                    Text(
+                                        text = "Linux 9p mount: mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                                Text(
+                                    text = "Android folder: $sharedDirPath",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Peripherals & CLI Preview
             item {
                 EditorSectionCard(title = "Peripherals & Extra Args", icon = Icons.Rounded.Terminal) {
@@ -1027,6 +1168,7 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         displayDevice = DisplayDevice.VIRTIO_VGA,
         resolution = DisplayResolution.HD_1280x720,
         sdlGlAcceleration = true,
+        spiceClipboardEnabled = true,
         recommendedIsoId = "alpine-virt-x86_64"
     )
     OsPreset.LINUX_DEBIAN -> current.copy(
@@ -1039,6 +1181,7 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         displayDevice = DisplayDevice.VIRTIO_VGA,
         resolution = DisplayResolution.HD_1280x720,
         sdlGlAcceleration = true,
+        spiceClipboardEnabled = true,
         recommendedIsoId = "debian-netinst-amd64"
     )
     OsPreset.WINDOWS -> current.copy(
@@ -1052,6 +1195,10 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         resolution = DisplayResolution.HD_1280x720,
         diskInterface = DiskInterface.SATA,
         sdlGlAcceleration = false,
+        attachVirtioDriversIso = true,
+        guestAgentEnabled = true,
+        spiceClipboardEnabled = true,
+        virtio9pEnabled = false,
         recommendedIsoId = "windows-10-eval-x64"
     )
     OsPreset.FREEDOS -> current.copy(
@@ -1066,6 +1213,11 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         diskInterface = DiskInterface.IDE,
         sdlGlAcceleration = false,
         usbTabletEnabled = false,
+        attachVirtioDriversIso = false,
+        guestAgentEnabled = false,
+        spiceClipboardEnabled = false,
+        virtio9pEnabled = false,
+        dynamicDisplayResize = false,
         recommendedIsoId = "freedos-13-livecd"
     )
     OsPreset.CUSTOM -> current.copy(
@@ -1087,6 +1239,9 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         sdlGlAcceleration = true,
         usbXhciEnabled = true,
         usbTabletEnabled = true,
+        attachVirtioDriversIso = false,
+        guestAgentEnabled = true,
+        spiceClipboardEnabled = true,
         recommendedIsoId = "alpine-virt-aarch64"
     )
     OsPreset.LINUX_DEBIAN_AARCH64 -> current.copy(
@@ -1102,6 +1257,9 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         sdlGlAcceleration = true,
         usbXhciEnabled = true,
         usbTabletEnabled = true,
+        attachVirtioDriversIso = false,
+        guestAgentEnabled = true,
+        spiceClipboardEnabled = true,
         recommendedIsoId = "debian-netinst-arm64"
     )
     OsPreset.WINDOWS_AARCH64 -> current.copy(
@@ -1117,6 +1275,10 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         sdlGlAcceleration = true,
         usbXhciEnabled = true,
         usbTabletEnabled = true,
+        attachVirtioDriversIso = true,
+        guestAgentEnabled = true,
+        spiceClipboardEnabled = true,
+        virtio9pEnabled = false,
         recommendedIsoId = "windows-11-ltsc-arm64"
     )
     OsPreset.CUSTOM_AARCH64 -> current.copy(
@@ -1143,6 +1305,11 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         venus3dEnabled = false,
         usbXhciEnabled = false,
         usbTabletEnabled = false,
+        attachVirtioDriversIso = false,
+        guestAgentEnabled = false,
+        spiceClipboardEnabled = false,
+        virtio9pEnabled = false,
+        dynamicDisplayResize = false,
         mouseEmulationMode = MouseEmulationMode.TRACKPAD_RELATIVE,
         audioEnabled = true,
         recommendedIsoId = "macos-921-ppc"
@@ -1162,6 +1329,11 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         venus3dEnabled = false,
         usbXhciEnabled = false,
         usbTabletEnabled = false,
+        attachVirtioDriversIso = false,
+        guestAgentEnabled = false,
+        spiceClipboardEnabled = false,
+        virtio9pEnabled = false,
+        dynamicDisplayResize = false,
         mouseEmulationMode = MouseEmulationMode.TRACKPAD_RELATIVE,
         audioEnabled = true,
         recommendedIsoId = null
@@ -1178,6 +1350,11 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         venus3dEnabled = false,
         usbXhciEnabled = false,
         usbTabletEnabled = false,
+        attachVirtioDriversIso = false,
+        guestAgentEnabled = false,
+        spiceClipboardEnabled = false,
+        virtio9pEnabled = false,
+        dynamicDisplayResize = false,
         recommendedIsoId = null
     )
 }

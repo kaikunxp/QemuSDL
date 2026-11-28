@@ -203,6 +203,18 @@ object NativeQemuBridge {
         }.getOrDefault(0L)
     }
 
+    /**
+     * Pushes an `SDL_WINDOWEVENT_EXPOSED` event to the active in-process SDL2 window so QEMU
+     * immediately redraws the guest framebuffer after returning from background / PiP / rotation.
+     */
+    @JvmStatic
+    fun notifySdlExposed() {
+        if (!isBridgeLoaded) return
+        runCatching {
+            nativeNotifySdlExposed()
+        }
+    }
+
     private external fun nativeProbeRuntime(nativeLibDir: String, customLibDir: String): String
 
     private external fun nativeStartSession(
@@ -241,4 +253,5 @@ object NativeQemuBridge {
     private external fun nativeStopSession()
     private external fun nativeGetTelemetryJson(): String
     private external fun nativeSyncSdlViewport(surfaceWidth: Int, surfaceHeight: Int): Long
+    private external fun nativeNotifySdlExposed()
 }

@@ -17,3 +17,6 @@ data class IsoDownloaderKey(val targetVmId: String? = null) : NavKey
 
 @Serializable
 data object RuntimeSetupKey : NavKey
+
+@Serializable
+data object AboutKey : NavKey

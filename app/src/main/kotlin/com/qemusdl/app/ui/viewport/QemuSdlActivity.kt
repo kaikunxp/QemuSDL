@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.ConnectivityManager
 import android.net.Uri
@@ -105,19 +106,31 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.window.layout.WindowInfoTracker
 import androidx.window.layout.WindowLayoutInfo
+import com.qemusdl.app.MainActivity
+import com.qemusdl.app.data.GuestArchitecture
 import com.qemusdl.app.data.MouseEmulationMode
 import com.qemusdl.app.data.SdlScalingMode
 import com.qemusdl.app.data.VmConfig
 import com.qemusdl.app.data.VmRepository
+import com.qemusdl.app.qemu.GuestAgentSnapshot
+import com.qemusdl.app.qemu.GuestSharedFolderServer
+import com.qemusdl.app.qemu.IsoDownloader
 import com.qemusdl.app.qemu.QemuCommandBuilder
 import com.qemusdl.app.qemu.QemuFirmwareManager
+import com.qemusdl.app.qemu.QemuGuestAgentClient
+import com.qemusdl.app.sdl.NativeQemuBridge
 import com.qemusdl.app.ui.adaptive.AppTooltipBox
 import com.qemusdl.app.ui.adaptive.desktopHandCursor
 import com.qemusdl.app.ui.theme.QemuSDLTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.libsdl.app.SDLActivity
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 private data class VirtualCursorUiState(
@@ -150,6 +163,15 @@ class QemuSdlActivity : SDLActivity() {
     private var appliedTabletopHeightPx: Int = -1
     private var pointerCaptured by mutableStateOf(false)
     private var hasEverDetectedWindowed = false
+    private var resolvedVirtioIsoName by mutableStateOf<String?>(null)
+    private var qgaSocketFile: File? = null
+    private var guestAgentClient: QemuGuestAgentClient? = null
+    private var guestAgentSnapshot by mutableStateOf(GuestAgentSnapshot())
+    private var guestAgentActionMessage by mutableStateOf<String?>(null)
+    private var hasAutoSyncedGuestClock = false
+    private var sharedFolderServer: GuestSharedFolderServer? = null
+    private var sharedFolderGuestUrl by mutableStateOf<String?>(null)
+    private var sharedFolderHostPath by mutableStateOf<String?>(null)
 
     override fun getLibraries(): Array<String> {
         // Parse architecture early if getLibraries() is invoked during super.onCreate()
@@ -221,6 +243,47 @@ class QemuSdlActivity : SDLActivity() {
         }
         val resolvedDisk = resolveMediaPath(vmConfig.diskPathOrUri, readWrite = true)
         val resolvedIso = resolveMediaPath(vmConfig.isoPathOrUri, readWrite = false)
+        val resolvedVirtioIso = if (vmConfig.attachVirtioDriversIso && vmConfig.architecture != GuestArchitecture.PPC) {
+            resolveMediaPath(vmConfig.virtioDriversIsoPath, readWrite = false)
+                ?: IsoDownloader.findVirtioDriversIso(this)?.absolutePath
+        } else {
+            null
+        }
+        resolvedVirtioIsoName = resolvedVirtioIso?.let { File(it).name }
+
+        // Prepare QEMU Guest Agent Unix socket (virtio-serial-pci -> org.qemu.guest_agent.0)
+        if (vmConfig.guestAgentEnabled && vmConfig.architecture != GuestArchitecture.PPC) {
+            val safeId = vmConfig.id.filter { it.isLetterOrDigit() }.take(12).ifEmpty { "vm" }
+            val sockFile = File(cacheDir, "qga_$safeId.sock")
+            if (sockFile.exists()) {
+                sockFile.delete()
+            }
+            qgaSocketFile = sockFile
+            guestAgentClient = QemuGuestAgentClient(sockFile.absolutePath)
+            guestAgentSnapshot = GuestAgentSnapshot(enabled = true)
+        } else {
+            guestAgentSnapshot = GuestAgentSnapshot(enabled = false)
+        }
+
+        // Prepare shared host folder for WebDAV/HTTP and/or VirtIO-9p (hostshare)
+        val virtio9pActive = vmConfig.virtio9pEnabled && vmConfig.architecture != GuestArchitecture.PPC
+        val sharedDir = if (vmConfig.sharedFolderEnabled || virtio9pActive) {
+            GuestSharedFolderServer.defaultSharedDirectory(this).also { dir ->
+                dir.mkdirs()
+                sharedFolderHostPath = dir.absolutePath
+            }
+        } else {
+            null
+        }
+        if (vmConfig.sharedFolderEnabled && sharedDir != null) {
+            val server = GuestSharedFolderServer(sharedDir, vmConfig.sharedFolderPort)
+            runCatching { server.start() }
+                .onSuccess {
+                    sharedFolderServer = server
+                    sharedFolderGuestUrl = server.guestUrl
+                }
+        }
+        val virtio9pPath = if (virtio9pActive) sharedDir?.absolutePath else null
 
         // Open permitted USB passthrough devices via UsbManager and extract file descriptors
         val usbManager = UsbPassthroughManager(this)
@@ -241,6 +304,9 @@ class QemuSdlActivity : SDLActivity() {
             config = vmConfig,
             resolvedDiskPath = resolvedDisk,
             resolvedIsoPath = resolvedIso,
+            resolvedVirtioIsoPath = resolvedVirtioIso,
+            guestAgentSocketPath = qgaSocketFile?.absolutePath,
+            virtio9pHostPath = virtio9pPath,
             firmwareDir = firmwareDirPath,
             edk2CodePath = pflashFiles?.first?.absolutePath,
             edk2VarsPath = pflashFiles?.second?.absolutePath,
@@ -248,17 +314,24 @@ class QemuSdlActivity : SDLActivity() {
             tcgTbSizeMb = computeRecommendedTcgTbSizeMb()
         )
 
-        // Configure SDL2 video/render/audio hints and Android upstream SLIRP DNS servers
+        // Configure SDL2 video/render/audio hints, display auto-resize, and Android upstream SLIRP DNS servers
         // prior to libSDL2.so + libqemu-system-x86_64.so initialization
         val activeDnsCsv = resolveAndroidDnsServersCsv()
+        val autoResizeEnabled = vmConfig.dynamicDisplayResize && vmConfig.architecture != GuestArchitecture.PPC
         runCatching {
             Os.setenv("SDL_RENDER_DRIVER", if (vmConfig.sdlGlAcceleration) "opengles2" else "software", true)
             Os.setenv("SDL_AUDIODRIVER", "openslES", true)
             Os.setenv("SDL_HINT_ANDROID_TRAP_BACK_BUTTON", "1", true)
             Os.setenv("SDL_HINT_TOUCH_MOUSE_EVENTS", "0", true)
-            // Keep the QEMU emulation & EGL context alive across brief Android window focus changes
-            Os.setenv("SDL_ANDROID_BLOCK_ON_PAUSE", "0", true)
+            // Allow all orientations so SDL2 never locks compact phone screens to a single orientation
+            Os.setenv("SDL_IOS_ORIENTATIONS", "LandscapeLeft LandscapeRight Portrait PortraitUpsideDown", true)
+            // Safely block QEMU's SDLThread when the Activity actually stops / loses its Surface
+            // (transient focus loss from HUD sheets/menus/PiP/split-screen does NOT pause SDL) so
+            // GLES never renders against a destroyed EGLSurface and cleanly restores upon return.
+            Os.setenv("SDL_ANDROID_BLOCK_ON_PAUSE", "1", true)
             Os.setenv("QEMU_SLIRP_DNS", activeDnsCsv, true)
+            Os.setenv("QEMU_SDL_AUTO_RESIZE", if (autoResizeEnabled) "1" else "0", true)
+            Os.setenv("QEMU_SDL_MAX_RESIZE_DIM", "1600", true)
         }
 
         super.onCreate(savedInstanceState)
@@ -340,6 +413,29 @@ class QemuSdlActivity : SDLActivity() {
             }
         }
 
+        // Poll QEMU Guest Agent in the background for live OS/IP telemetry and automatic clock sync
+        guestAgentClient?.let { client ->
+            lifecycleScope.launch {
+                repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    while (true) {
+                        val prevSyncMs = guestAgentSnapshot.lastTimeSyncEpochMs
+                        val updated: GuestAgentSnapshot = withContext(Dispatchers.IO) {
+                            var snap = client.querySnapshot(prevSyncMs)
+                            if (snap.connected && !hasAutoSyncedGuestClock) {
+                                if (client.syncGuestTime()) {
+                                    hasAutoSyncedGuestClock = true
+                                    snap = snap.copy(lastTimeSyncEpochMs = System.currentTimeMillis())
+                                }
+                            }
+                            snap
+                        }
+                        guestAgentSnapshot = updated
+                        delay(if (updated.connected) 10_000L else 4_000L)
+                    }
+                }
+            }
+        }
+
         val repository = VmRepository.getInstance(this)
 
         // Overlay our Material 3 Expressive Compose HUD directly on top of SDLActivity.mLayout
@@ -417,6 +513,39 @@ class QemuSdlActivity : SDLActivity() {
                                 sendAsciiCommandToGuest(cmd)
                             },
                             activeDnsServers = activeDnsCsv,
+                            guestAgentSnapshot = guestAgentSnapshot,
+                            guestAgentActionMessage = guestAgentActionMessage,
+                            virtioDriversIsoMountedName = resolvedVirtioIsoName,
+                            sharedFolderGuestUrl = sharedFolderGuestUrl,
+                            sharedFolderHostPath = sharedFolderHostPath,
+                            onSyncGuestClock = {
+                                val client = guestAgentClient ?: return@QemuSdlOverlayHud
+                                lifecycleScope.launch {
+                                    guestAgentActionMessage = "Syncing guest clock..."
+                                    val ok = withContext(Dispatchers.IO) { client.syncGuestTime() }
+                                    if (ok) {
+                                        hasAutoSyncedGuestClock = true
+                                        guestAgentSnapshot = guestAgentSnapshot.copy(
+                                            lastTimeSyncEpochMs = System.currentTimeMillis()
+                                        )
+                                        guestAgentActionMessage = "Guest clock synced to host UTC"
+                                    } else {
+                                        guestAgentActionMessage = "Clock sync failed — is qemu-ga running?"
+                                    }
+                                }
+                            },
+                            onGracefulGuestShutdown = {
+                                val client = guestAgentClient ?: return@QemuSdlOverlayHud
+                                lifecycleScope.launch {
+                                    guestAgentActionMessage = "Sending ACPI/QGA graceful shutdown..."
+                                    val ok = withContext(Dispatchers.IO) { client.requestGracefulShutdown() }
+                                    guestAgentActionMessage = if (ok) {
+                                        "Shutdown requested — waiting for guest OS to halt cleanly"
+                                    } else {
+                                        "Guest agent unreachable — use Force Power Off if needed"
+                                    }
+                                }
+                            },
                             onPowerOff = {
                                 powerOffVmProcess()
                             }
@@ -482,14 +611,85 @@ class QemuSdlActivity : SDLActivity() {
         data?.add(vmViewportShortcuts)
     }
 
+    override fun setOrientationBis(w: Int, h: Int, resizable: Boolean, hint: String?) {
+        // QEMU creates an SDL_WINDOW_FULLSCREEN_DESKTOP window without SDL_WINDOW_RESIZABLE,
+        // which causes SDLActivity's default setOrientationBis() to force SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        // on compact phone screens (< 600dp). Keep orientation unspecified so phones, foldables,
+        // and desktops honor Android's system auto-rotate freely in both portrait and landscape.
+        if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val requestedConfig = intent.getStringExtra(EXTRA_VM_CONFIG_JSON)?.let { raw ->
+            runCatching { json.decodeFromString<VmConfig>(raw) }.getOrNull()
+        }
+        if (requestedConfig != null && requestedConfig.id != vmConfig.id) {
+            // Switching to a different VM while another is still alive: ask MainActivity to
+            // launch the target VM cleanly once this isolated :qemu_vm process exits.
+            val launchAdjacent = intent.getBooleanExtra(EXTRA_LAUNCH_ADJACENT, false)
+            startActivity(
+                MainActivity.createRelaunchVmIntent(
+                    context = this,
+                    vmId = requestedConfig.id,
+                    launchAdjacent = launchAdjacent
+                )
+            )
+            powerOffVmProcess()
+            return
+        }
+        // Returning to the already-running VM (from MainActivity, PiP, Split-Screen, or shortcut)
+        refreshWindowingState()
+        if (!isInPipMode && !windowingState.showFullscreenButton) {
+            applyFullscreenState(true)
+        }
+        mSurface?.post {
+            mSurface?.requestViewportRescale()
+            NativeQemuBridge.notifySdlExposed()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshWindowingState()
+        if (windowingState.isFullscreen && !isInPipMode) {
+            applyFullscreenState(true)
+        }
+        mSurface?.post {
+            mSurface?.requestViewportRescale()
+            NativeQemuBridge.notifySdlExposed()
+        }
+        // Re-sync guest clock whenever returning from Android background/sleep
+        val client = guestAgentClient
+        if (client != null && guestAgentSnapshot.connected) {
+            lifecycleScope.launch {
+                val ok = withContext(Dispatchers.IO) { client.syncGuestTime() }
+                if (ok) {
+                    guestAgentSnapshot = guestAgentSnapshot.copy(
+                        lastTimeSyncEpochMs = System.currentTimeMillis()
+                    )
+                }
+            }
+        }
+    }
+
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
         newConfig: Configuration
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPipMode = isInPictureInPictureMode
+        if (!isInPictureInPictureMode && !windowingState.showFullscreenButton) {
+            applyFullscreenState(true)
+        }
         updateSurfaceLayoutForPosture()
-        mSurface?.post { mSurface?.requestViewportRescale() }
+        mSurface?.post {
+            mSurface?.requestViewportRescale()
+            NativeQemuBridge.notifySdlExposed()
+        }
     }
 
     private fun buildPipParams(guestWidth: Int, guestHeight: Int): PictureInPictureParams =
@@ -541,34 +741,65 @@ class QemuSdlActivity : SDLActivity() {
         if (!hasFocus && mSurface?.isPointerCaptureActive == true) {
             mSurface?.setPointerCapture(false)
         }
-        if (hasFocus && windowingState.isFullscreen) {
+        if (hasFocus && windowingState.isFullscreen && !isInPipMode) {
             applyFullscreenState(true)
         }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        if (!mBrokenLibraries) {
+            val newOrientation = SDLActivity.getCurrentOrientation()
+            if (newOrientation != SDLActivity.mCurrentOrientation) {
+                SDLActivity.mCurrentOrientation = newOrientation
+                SDLActivity.onNativeOrientationChanged(newOrientation)
+            }
+        }
         refreshWindowingState()
-        mSurface?.post { mSurface?.requestViewportRescale() }
+        lastWindowLayoutInfo?.let { info ->
+            val windowHeightPx = mLayout?.height?.takeIf { it > 0 }
+                ?: resources.displayMetrics.heightPixels
+            val resolved = FoldableViewportHelper.resolveTabletopPosture(info, windowHeightPx)
+            if (resolved != viewportPosture) {
+                viewportPosture = resolved
+                updateSurfaceLayoutForPosture()
+            }
+        }
+        mSurface?.post {
+            mSurface?.requestViewportRescale()
+            NativeQemuBridge.notifySdlExposed()
+        }
     }
 
     override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
         super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
         refreshWindowingState()
-        mSurface?.post { mSurface?.requestViewportRescale() }
+        mSurface?.post {
+            mSurface?.requestViewportRescale()
+            NativeQemuBridge.notifySdlExposed()
+        }
     }
 
     override fun onDestroy() {
-        activeUsbSessions.forEach { session -> runCatching { session.close() } }
-        activeUsbSessions.clear()
-        openDescriptors.forEach { pfd -> runCatching { pfd.close() } }
-        openDescriptors.clear()
+        releaseExternalHandles()
         super.onDestroy()
         // Exit the isolated :qemu_vm process cleanly so QEMU globals & guest RAM are freed
         Process.killProcess(Process.myPid())
     }
 
+    private fun releaseExternalHandles() {
+        runCatching { sharedFolderServer?.stop() }
+        sharedFolderServer = null
+        qgaSocketFile?.let { file -> runCatching { file.delete() } }
+        qgaSocketFile = null
+        activeUsbSessions.forEach { session -> runCatching { session.close() } }
+        activeUsbSessions.clear()
+        openDescriptors.forEach { pfd -> runCatching { pfd.close() } }
+        openDescriptors.clear()
+    }
+
     private fun powerOffVmProcess() {
+        releaseExternalHandles()
         finish()
         Process.killProcess(Process.myPid())
     }
@@ -675,6 +906,7 @@ class QemuSdlActivity : SDLActivity() {
 
     companion object {
         private const val EXTRA_VM_CONFIG_JSON = "extra_vm_config_json"
+        private const val EXTRA_LAUNCH_ADJACENT = "extra_launch_adjacent"
         private val codec = Json { encodeDefaults = true }
 
         fun createIntent(
@@ -684,12 +916,12 @@ class QemuSdlActivity : SDLActivity() {
         ): Intent =
             Intent(context, QemuSdlActivity::class.java)
                 .putExtra(EXTRA_VM_CONFIG_JSON, codec.encodeToString(config))
+                .putExtra(EXTRA_LAUNCH_ADJACENT, launchAdjacent)
                 .apply {
                     if (launchAdjacent) {
                         addFlags(
                             Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or
-                                Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                                Intent.FLAG_ACTIVITY_NEW_TASK
                         )
                     }
                 }
@@ -797,6 +1029,13 @@ private fun QemuSdlOverlayHud(
     onKeyUp: (Int) -> Unit,
     onSendShellCommand: (String) -> Unit,
     activeDnsServers: String,
+    guestAgentSnapshot: GuestAgentSnapshot,
+    guestAgentActionMessage: String?,
+    virtioDriversIsoMountedName: String?,
+    sharedFolderGuestUrl: String?,
+    sharedFolderHostPath: String?,
+    onSyncGuestClock: () -> Unit,
+    onGracefulGuestShutdown: () -> Unit,
     onPowerOff: () -> Unit
 ) {
     // Keep Picture-in-Picture thumbnail completely clean with zero overlaid controls
@@ -1424,6 +1663,211 @@ private fun QemuSdlOverlayHud(
                             )
                         }
                     }
+                }
+
+                // QEMU Guest Agent (org.qemu.guest_agent.0) live status, clock sync & graceful shutdown
+                if (guestAgentSnapshot.enabled) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (guestAgentSnapshot.connected) Color(0xFF4CE0A0)
+                                            else MaterialTheme.colorScheme.outline
+                                        )
+                                )
+                                Text(
+                                    text = if (guestAgentSnapshot.connected) {
+                                        "QEMU Guest Agent · Connected" +
+                                            (guestAgentSnapshot.agentVersion?.let { " (v$it)" } ?: "")
+                                    } else {
+                                        "QEMU Guest Agent · Waiting for qemu-ga"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                            }
+                            if (guestAgentSnapshot.connected) {
+                                val osLabel = listOfNotNull(
+                                    guestAgentSnapshot.osName,
+                                    guestAgentSnapshot.osVersion
+                                ).joinToString(" ").ifBlank { "Guest OS detected" }
+                                Text(
+                                    text = "OS: $osLabel",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (guestAgentSnapshot.ipv4Addresses.isNotEmpty()) {
+                                    Text(
+                                        text = "IPv4: ${guestAgentSnapshot.ipv4Addresses.joinToString(", ")}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                guestAgentSnapshot.lastTimeSyncEpochMs?.let { epochMs ->
+                                    val formatted = remember(epochMs) {
+                                        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(epochMs))
+                                    }
+                                    Text(
+                                        text = "Last clock sync: $formatted",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = false,
+                                        onClick = onSyncGuestClock,
+                                        label = { Text("Sync Clock Now") }
+                                    )
+                                    FilterChip(
+                                        selected = false,
+                                        onClick = onGracefulGuestShutdown,
+                                        label = { Text("Graceful Shutdown") }
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = "Install qemu-guest-agent in Linux (apt/apk add qemu-guest-agent) or run virtio-win-guest-tools.exe in Windows to enable graceful shutdown, auto clock sync, and live telemetry.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            guestAgentActionMessage?.let { msg ->
+                                Text(
+                                    text = msg,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // SPICE Tools & Display Integration status card
+                val spiceClipboardActive = vmConfig.spiceClipboardEnabled && vmConfig.architecture != GuestArchitecture.PPC
+                val autoResizeActive = vmConfig.dynamicDisplayResize && vmConfig.architecture != GuestArchitecture.PPC
+                if (spiceClipboardActive || autoResizeActive) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "SPICE Tools & Display Integration",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            if (spiceClipboardActive) {
+                                Text(
+                                    text = "Clipboard Sync: Active (qemu-vdagent -> com.redhat.spice.0)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Install spice-vdagent in Linux or virtio-win-guest-tools.exe in Windows for automatic host ↔ guest clipboard sharing.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (autoResizeActive) {
+                                Text(
+                                    text = "Dynamic Display Auto-Resize: Active (aspect-preserving, max 1600px)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Shared Folder (WebDAV / HTTP & VirtIO-9p) status card
+                val virtio9pActive = vmConfig.virtio9pEnabled && vmConfig.architecture != GuestArchitecture.PPC
+                if (sharedFolderGuestUrl != null || virtio9pActive) {
+                    val activeModes = buildList {
+                        if (sharedFolderGuestUrl != null) add("WebDAV / HTTP")
+                        if (virtio9pActive) add("VirtIO-9p")
+                    }.joinToString(" + ")
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Host ↔ Guest Shared Folder · Active ($activeModes)",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            sharedFolderGuestUrl?.let { url ->
+                                Text(
+                                    text = "WebDAV / HTTP: $url",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            if (virtio9pActive) {
+                                Text(
+                                    text = "VirtIO-9p tag: hostshare (mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        showMonitorSheet = false
+                                        onSendShellCommand("mkdir -p /mnt/host && mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/host")
+                                    },
+                                    label = { Text("Type 9p Mount Command") }
+                                )
+                            }
+                            sharedFolderHostPath?.let { hostPath ->
+                                Text(
+                                    text = "Android folder: $hostPath",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (sharedFolderGuestUrl != null) {
+                                Text(
+                                    text = "Open the URL in any guest browser for drag-and-drop download/upload, or map as a WebDAV network drive.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Secondary CD-ROM: VirtIO Drivers ISO indicator
+                if (virtioDriversIsoMountedName != null) {
+                    Text(
+                        text = "VirtIO Drivers ISO (CD-ROM #2): $virtioDriversIsoMountedName",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                 }
 
                 Text(

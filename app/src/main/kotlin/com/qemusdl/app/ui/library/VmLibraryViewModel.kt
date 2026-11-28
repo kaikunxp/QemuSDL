@@ -114,7 +114,11 @@ class VmLibraryViewModel(application: Application) : AndroidViewModel(applicatio
             entry = entry,
             onComplete = { file ->
                 if (autoAttachVmId != null) {
-                    attachIsoToVm(autoAttachVmId, file.absolutePath, file.name)
+                    if (entry.isDriverTools) {
+                        attachVirtioDriversIsoToVm(autoAttachVmId, file.absolutePath)
+                    } else {
+                        attachIsoToVm(autoAttachVmId, file.absolutePath, file.name)
+                    }
                 }
                 onComplete(file)
             },
@@ -156,6 +160,11 @@ class VmLibraryViewModel(application: Application) : AndroidViewModel(applicatio
     fun attachIsoToVm(vmId: String, isoPath: String, isoName: String) {
         val vm = repository.getVmById(vmId) ?: return
         saveVm(vm.copy(isoPathOrUri = isoPath, isoDisplayName = isoName))
+    }
+
+    fun attachVirtioDriversIsoToVm(vmId: String, isoPath: String) {
+        val vm = repository.getVmById(vmId) ?: return
+        saveVm(vm.copy(attachVirtioDriversIso = true, virtioDriversIsoPath = isoPath))
     }
 
     fun importNativeLibrary(uri: Uri, onComplete: (String) -> Unit) {

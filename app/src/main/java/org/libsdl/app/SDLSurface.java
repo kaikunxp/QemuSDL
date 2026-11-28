@@ -786,6 +786,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
 
         applyViewScaling();
         syncViewportNow(width, height);
+        com.qemusdl.app.sdl.NativeQemuBridge.notifySdlExposed();
         mSyncTickerActive = true;
         removeCallbacks(mViewportSyncRunnable);
         postDelayed(mViewportSyncRunnable, 180L);
