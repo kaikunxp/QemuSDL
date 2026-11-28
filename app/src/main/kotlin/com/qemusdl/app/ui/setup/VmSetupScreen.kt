@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
@@ -79,6 +80,7 @@ import com.qemusdl.app.ui.adaptive.desktopWaitCursor
 import com.qemusdl.app.ui.isos.DownloadStateSection
 import com.qemusdl.app.ui.library.VmLibraryViewModel
 import kotlinx.coroutines.launch
+import java.io.File
 import kotlin.math.roundToInt
 
 @OptIn(
@@ -100,6 +102,7 @@ fun VmSetupScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     val allVms by viewModel.vms.collectAsState()
+    val localDisks by viewModel.disks.collectAsState()
     val downloadedIsos by viewModel.downloadedIsos.collectAsState()
     val downloadStates by viewModel.isoDownloadStates.collectAsState()
 
@@ -113,18 +116,57 @@ fun VmSetupScreen(
         downloadedIsos.firstOrNull { it.name == rec.targetFileName }
     }
 
-    var selectedIsoPath by rememberSaveable(vmId, sourceVm.isoPathOrUri, existingRecommendedIso?.path) {
+    val validSourceIsoPath = remember(sourceVm.isoPathOrUri) {
+        val raw = sourceVm.isoPathOrUri.trim()
+        when {
+            raw.isEmpty() -> ""
+            raw.startsWith("content://") -> raw
+            File(raw).isFile -> raw
+            else -> ""
+        }
+    }
+    val validSourceDiskPath = remember(sourceVm.diskPathOrUri) {
+        val raw = sourceVm.diskPathOrUri.trim()
+        when {
+            raw.isEmpty() -> ""
+            raw.startsWith("content://") -> raw
+            File(raw).isFile -> raw
+            else -> ""
+        }
+    }
+    val hadMissingDiskFile = sourceVm.diskPathOrUri.isNotBlank() && validSourceDiskPath.isEmpty()
+
+    var selectedIsoPath by rememberSaveable(vmId, validSourceIsoPath, existingRecommendedIso?.path) {
         mutableStateOf(
-            sourceVm.isoPathOrUri.ifBlank { existingRecommendedIso?.path.orEmpty() }
+            validSourceIsoPath.ifBlank { existingRecommendedIso?.path.orEmpty() }
         )
     }
-    var selectedIsoName by rememberSaveable(vmId, sourceVm.isoDisplayName, existingRecommendedIso?.name) {
+    var selectedIsoName by rememberSaveable(vmId, validSourceIsoPath, sourceVm.isoDisplayName, existingRecommendedIso?.name) {
         mutableStateOf(
-            sourceVm.isoDisplayName.ifBlank { existingRecommendedIso?.name.orEmpty() }
+            if (validSourceIsoPath.isNotBlank()) {
+                sourceVm.isoDisplayName.ifBlank { File(validSourceIsoPath).name }
+            } else {
+                existingRecommendedIso?.name.orEmpty()
+            }
         )
     }
 
-    var createDiskOnFinish by rememberSaveable(vmId) { mutableStateOf(sourceVm.diskPathOrUri.isBlank()) }
+    var selectedDiskPath by rememberSaveable(vmId, validSourceDiskPath) {
+        mutableStateOf(validSourceDiskPath)
+    }
+    var selectedDiskName by rememberSaveable(vmId, validSourceDiskPath, sourceVm.diskDisplayName) {
+        mutableStateOf(
+            if (validSourceDiskPath.isNotBlank()) {
+                sourceVm.diskDisplayName.ifBlank { File(validSourceDiskPath).name }
+            } else {
+                ""
+            }
+        )
+    }
+
+    var createDiskOnFinish by rememberSaveable(vmId, validSourceDiskPath) {
+        mutableStateOf(validSourceDiskPath.isBlank())
+    }
     var diskSizeMb by rememberSaveable(vmId, sourceVm.osPreset) {
         mutableIntStateOf(
             when (sourceVm.osPreset) {
@@ -193,12 +235,19 @@ fun VmSetupScreen(
             memoryMb = memoryMb,
             isoPathOrUri = selectedIsoPath,
             isoDisplayName = selectedIsoName,
+            diskPathOrUri = selectedDiskPath,
+            diskDisplayName = selectedDiskName,
             isSetupComplete = true
         )
 
-        if (createDiskOnFinish && baseUpdated.diskPathOrUri.isBlank()) {
+        if (createDiskOnFinish) {
             val diskName = "${sourceVm.name.lowercase().replace(Regex("[^a-z0-9]+"), "_")}_disk"
-            viewModel.createDisk(diskName, diskSizeMb, DiskFormat.QCOW2) { created ->
+            viewModel.createDisk(
+                name = diskName,
+                sizeMb = diskSizeMb,
+                format = DiskFormat.QCOW2,
+                uniqueIfExists = true
+            ) { created ->
                 val finalConfig = baseUpdated.copy(
                     diskPathOrUri = created.path,
                     diskDisplayName = "${created.name} ($diskSizeMb MB)"
@@ -445,15 +494,105 @@ fun VmSetupScreen(
                         }
                         Spacer(Modifier.height(10.dp))
 
+                        if (hadMissingDiskFile && selectedDiskPath.isBlank()) {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = MaterialTheme.shapes.medium,
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Rounded.WarningAmber, contentDescription = null)
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(
+                                        text = "Previous disk image was deleted or moved. Create a new QCOW2 disk below or select an existing one.",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        } else if (selectedDiskPath.isNotBlank() && !createDiskOnFinish) {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = MaterialTheme.shapes.medium,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Rounded.CheckCircle, contentDescription = null)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Disk Attached", style = MaterialTheme.typography.labelMedium)
+                                        Text(
+                                            text = selectedDiskName.ifBlank { File(selectedDiskPath).name },
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            selectedDiskPath = ""
+                                            selectedDiskName = ""
+                                            createDiskOnFinish = true
+                                        }
+                                    ) {
+                                        Text("Detach")
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        }
+
+                        if (localDisks.isNotEmpty()) {
+                            Text("Existing Local Disks:", style = MaterialTheme.typography.labelLarge)
+                            Spacer(Modifier.height(6.dp))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                localDisks.forEach { disk ->
+                                    FilterChip(
+                                        selected = !createDiskOnFinish && selectedDiskPath == disk.path,
+                                        onClick = {
+                                            selectedDiskPath = disk.path
+                                            selectedDiskName = disk.virtualSizeMb?.let { "${disk.name} ($it MB)" } ?: disk.name
+                                            createDiskOnFinish = false
+                                        },
+                                        label = {
+                                            val sizeLabel = disk.virtualSizeMb?.let { " (${it} MB)" }.orEmpty()
+                                            Text("${disk.name}$sizeLabel")
+                                        }
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                                Text("Create sparse QCOW2 v3 disk", style = MaterialTheme.typography.titleMedium)
                                 Text(
-                                    text = "Starts at ~256 KB on disk and grows dynamically as the guest writes data.",
+                                    text = if (selectedDiskPath.isNotBlank()) {
+                                        "Create new sparse QCOW2 v3 disk"
+                                    } else {
+                                        "Create sparse QCOW2 v3 disk"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = if (selectedDiskPath.isNotBlank()) {
+                                        "Replaces the current disk attachment with a fresh sparse QCOW2 image."
+                                    } else {
+                                        "Starts at ~256 KB on disk and grows dynamically as the guest writes data."
+                                    },
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

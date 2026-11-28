@@ -88,9 +88,15 @@ class VmLibraryViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun createDisk(name: String, sizeMb: Int, format: DiskFormat, onCreated: (VirtualDiskInfo) -> Unit = {}) {
+    fun createDisk(
+        name: String,
+        sizeMb: Int,
+        format: DiskFormat,
+        uniqueIfExists: Boolean = false,
+        onCreated: (VirtualDiskInfo) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            val info = repository.createVirtualDisk(name, sizeMb, format)
+            val info = repository.createVirtualDisk(name, sizeMb, format, uniqueIfExists = uniqueIfExists)
             onCreated(info)
         }
     }
@@ -154,6 +160,7 @@ class VmLibraryViewModel(application: Application) : AndroidViewModel(applicatio
     fun deleteLocalIso(path: String) {
         viewModelScope.launch(Dispatchers.IO) {
             isoDownloader.deleteLocalIso(path)
+            repository.detachDeletedIso(path)
         }
     }
 

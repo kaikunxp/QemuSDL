@@ -215,6 +215,14 @@ object NativeQemuBridge {
         }
     }
 
+    @JvmStatic
+    fun enableStdioLogcat() {
+        if (!isBridgeLoaded) return
+        runCatching {
+            nativeEnableStdioLogcat()
+        }
+    }
+
     private external fun nativeProbeRuntime(nativeLibDir: String, customLibDir: String): String
 
     private external fun nativeStartSession(
@@ -254,4 +262,5 @@ object NativeQemuBridge {
     private external fun nativeGetTelemetryJson(): String
     private external fun nativeSyncSdlViewport(surfaceWidth: Int, surfaceHeight: Int): Long
     private external fun nativeNotifySdlExposed()
+    private external fun nativeEnableStdioLogcat()
 }

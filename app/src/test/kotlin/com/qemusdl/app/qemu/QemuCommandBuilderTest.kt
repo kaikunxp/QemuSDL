@@ -452,4 +452,38 @@ class QemuCommandBuilderTest {
         assertTrue(args.contains("local,id=fsdev0,path=/storage/shared_folder,security_model=none"))
         assertTrue(args.contains("virtio-9p-pci,fsdev=fsdev0,mount_tag=hostshare"))
     }
+
+    @Test
+    fun buildArgs_omitsMissingDiskAndIsoWhenResolvedPathIsEmpty() {
+        val vm = VmConfig(
+            name = "Alpine x86_64",
+            diskPathOrUri = "/data/user/0/com.qemusdl.app/files/disks/deleted_disk.qcow2",
+            isoPathOrUri = "/data/user/0/com.qemusdl.app/files/isos/alpine.iso"
+        )
+
+        val args = QemuCommandBuilder.buildArgs(
+            config = vm,
+            resolvedDiskPath = "",
+            resolvedIsoPath = "/data/user/0/com.qemusdl.app/files/isos/alpine.iso"
+        )
+
+        assertFalse(args.any { it.contains("deleted_disk.qcow2") })
+        assertFalse(args.contains("virtio-blk-pci,drive=disk0,iothread=io1"))
+        assertTrue(args.contains("-cdrom"))
+        assertTrue(args.contains("/data/user/0/com.qemusdl.app/files/isos/alpine.iso"))
+    }
+
+    @Test
+    fun buildArgs_x86QxlFallsBackToVirtioVgaInsteadOfUnsupportedQxlVga() {
+        val vm = VmConfig(
+            name = "Legacy Windows x64",
+            displayDevice = DisplayDevice.QXL,
+            resolution = DisplayResolution.HD_1280x720
+        )
+
+        val args = QemuCommandBuilder.buildArgs(vm)
+
+        assertFalse(args.contains("qxl-vga"))
+        assertTrue(args.contains("virtio-vga,xres=1280,yres=720"))
+    }
 }

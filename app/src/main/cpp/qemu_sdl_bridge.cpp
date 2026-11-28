@@ -5,6 +5,7 @@
 #include <jni.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cstring>
@@ -696,6 +697,48 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeNotifySdlExposed(
     ev.windowID = fnGetWinId(window);
     ev.event = 3U; // SDL_WINDOWEVENT_EXPOSED -> triggers sdl2_redraw(scon) in QEMU
     fnPushEvent(&ev);
+}
+
+JNIEXPORT void JNICALL
+Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeEnableStdioLogcat(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/
+) {
+    static std::atomic<bool> started{false};
+    if (started.exchange(true)) {
+        return;
+    }
+    int pfd[2];
+    if (pipe(pfd) != 0) {
+        return;
+    }
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    dup2(pfd[1], STDOUT_FILENO);
+    dup2(pfd[1], STDERR_FILENO);
+    close(pfd[1]);
+
+    int readFd = pfd[0];
+    std::thread([readFd]() {
+        char buf[1024];
+        std::string pending;
+        ssize_t n;
+        while ((n = read(readFd, buf, sizeof(buf) - 1)) > 0) {
+            pending.append(buf, static_cast<size_t>(n));
+            size_t pos;
+            while ((pos = pending.find('\n')) != std::string::npos) {
+                std::string line = pending.substr(0, pos);
+                pending.erase(0, pos + 1);
+                if (!line.empty()) {
+                    __android_log_print(ANDROID_LOG_WARN, "QemuStdio", "%s", line.c_str());
+                }
+            }
+        }
+        if (!pending.empty()) {
+            __android_log_print(ANDROID_LOG_WARN, "QemuStdio", "%s", pending.c_str());
+        }
+        close(readFd);
+    }).detach();
 }
 
 } // extern "C"

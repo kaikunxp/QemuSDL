@@ -4,7 +4,7 @@
   <p><strong>Android x86_64, AArch64 &amp; PowerPC QEMU VM Runner with Native SDL2 Viewport</strong></p>
   <p>
     <img src="https://img.shields.io/badge/Vibe_Coded-100%25_AI_Generated-8A2BE2?style=for-the-badge" alt="Vibe Coded" />
-    <img src="https://img.shields.io/badge/Version-1.4.0-2E7D32?style=for-the-badge" alt="Version 1.4.0" />
+    <img src="https://img.shields.io/badge/Version-1.5.0-2E7D32?style=for-the-badge" alt="Version 1.5.0" />
     <img src="https://img.shields.io/badge/Android-API_31--37-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Platform" />
     <img src="https://img.shields.io/badge/QEMU-x86__64_%7C_AArch64_%7C_PPC-FF6600?style=for-the-badge" alt="Architectures" />
     <img src="https://img.shields.io/badge/Display-Native_SDL2_%2B_GLES3-00B4D8?style=for-the-badge" alt="Renderer" />
@@ -150,7 +150,7 @@ flowchart TD
 
 ## Guest Tools, Clipboard & File Sharing (VirtIO + SPICE)
 
-QemuSDL v1.4 ships full open-source VirtIO & SPICE guest integration out of the box without any proprietary dependencies:
+QemuSDL ships full open-source VirtIO & SPICE guest integration out of the box without any proprietary dependencies:
 
 - **One-Tap `virtio-win.iso` Drivers CD (CD-ROM #2)**: Download Fedora's signed open-source `virtio-win.iso` directly from the ISO Catalog or VM Editor and attach it automatically alongside your Windows install ISO (`VirtIO-Block`, `VirtIO-Net`, `VirtIO-GPU`, `QXL`, `VirtIO-Serial`, plus `virtio-win-guest-tools.exe`).
 - **QEMU Guest Agent (`org.qemu.guest_agent.0`)**: Connects over a shared `virtio-serial-pci` controller to provide **graceful OS shutdown**, **automatic guest clock sync** on VM connect/resume, and live **OS / hostname / IP telemetry** in the Monitor Sheet.

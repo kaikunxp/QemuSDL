@@ -106,7 +106,7 @@ enum class DisplayDevice(
     BOCHS_DISPLAY("bochs-display", "Bochs Display PCI", supportsVenus = false, supportsX86 = true, supportsAarch64 = true, supportsPpc = true),
     STD("std", "Standard VGA (OpenBIOS / qemu_vga.ndrv)", supportsVenus = false, supportsX86 = true, supportsAarch64 = false, supportsPpc = true),
     ATI_VGA("ati-vga", "ATI Rage 128 Pro (PPC)", supportsVenus = false, supportsX86 = false, supportsAarch64 = false, supportsPpc = true),
-    QXL("qxl-vga", "QXL VGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false, supportsPpc = false),
+    QXL("qxl-vga", "QXL VGA (Legacy)", supportsVenus = false, supportsX86 = false, supportsAarch64 = false, supportsPpc = false),
     VMWARE("vmware-svga", "VMware SVGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false, supportsPpc = false);
 
     fun isSupportedOn(arch: GuestArchitecture): Boolean = when (arch) {

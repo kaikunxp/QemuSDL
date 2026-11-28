@@ -67,17 +67,26 @@ class VmRepository(private val appContext: Context) {
     suspend fun createVirtualDisk(
         baseName: String,
         sizeMb: Int,
-        format: DiskFormat
+        format: DiskFormat,
+        uniqueIfExists: Boolean = false
     ): VirtualDiskInfo = withContext(Dispatchers.IO) {
         val safeName = baseName.trim()
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .ifBlank { "disk_${System.currentTimeMillis()}" }
-        val fileName = if (safeName.endsWith(".${format.extension}", ignoreCase = true)) {
-            safeName
+        val extSuffix = ".${format.extension}"
+        val stem = if (safeName.endsWith(extSuffix, ignoreCase = true)) {
+            safeName.dropLast(extSuffix.length)
         } else {
-            "$safeName.${format.extension}"
+            safeName
         }
-        val target = File(disksDir, fileName)
+        var target = File(disksDir, "$stem$extSuffix")
+        if (uniqueIfExists && target.exists()) {
+            var suffix = 2
+            while (target.exists()) {
+                target = File(disksDir, "${stem}_$suffix$extSuffix")
+                suffix++
+            }
+        }
         DiskImageCreator.createDisk(target, sizeMb, format)
         refreshDisks()
         VirtualDiskInfo(
@@ -91,10 +100,63 @@ class VmRepository(private val appContext: Context) {
 
     suspend fun deleteVirtualDisk(path: String) = withContext(Dispatchers.IO) {
         val file = File(path)
+        val targetCanonical = runCatching { file.canonicalPath }.getOrNull()
         if (file.exists() && file.parentFile?.canonicalPath == disksDir.canonicalPath) {
             file.delete()
         }
         refreshDisks()
+
+        // Detach the deleted disk from any VM configs still pointing to it so VMs don't break on boot
+        var changed = false
+        val updatedVms = _vms.value.map { vm ->
+            if (pathsReferToSameLocalFile(vm.diskPathOrUri, path, targetCanonical)) {
+                changed = true
+                vm.copy(diskPathOrUri = "", diskDisplayName = "")
+            } else {
+                vm
+            }
+        }
+        if (changed) {
+            persistVms(updatedVms)
+        }
+    }
+
+    suspend fun detachDeletedIso(path: String) = withContext(Dispatchers.IO) {
+        val targetCanonical = runCatching { File(path).canonicalPath }.getOrNull()
+        var changed = false
+        val updatedVms = _vms.value.map { vm ->
+            var next = vm
+            if (pathsReferToSameLocalFile(vm.isoPathOrUri, path, targetCanonical)) {
+                changed = true
+                next = next.copy(isoPathOrUri = "", isoDisplayName = "")
+            }
+            if (pathsReferToSameLocalFile(vm.virtioDriversIsoPath, path, targetCanonical)) {
+                changed = true
+                next = next.copy(virtioDriversIsoPath = "")
+            }
+            next
+        }
+        if (changed) {
+            persistVms(updatedVms)
+        }
+    }
+
+    private fun pathsReferToSameLocalFile(
+        candidatePathOrUri: String,
+        targetPath: String,
+        targetCanonical: String?
+    ): Boolean {
+        val trimmed = candidatePathOrUri.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("content://")) return false
+        if (trimmed == targetPath) return true
+        val candidateCanonical = runCatching { File(trimmed).canonicalPath }.getOrNull()
+        return targetCanonical != null && candidateCanonical == targetCanonical
+    }
+
+    private fun isMissingLocalFile(pathOrUri: String): Boolean {
+        val trimmed = pathOrUri.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("content://")) return false
+        return !File(trimmed).isFile
     }
 
     fun refreshDisks() {
@@ -158,7 +220,24 @@ class VmRepository(private val appContext: Context) {
                         vm
                     }
                 }
-                var finalVms = migrated
+                // Self-heal stale local disk/ISO paths if backing files were deleted
+                val healed = migrated.map { vm ->
+                    var next = vm
+                    if (isMissingLocalFile(next.diskPathOrUri)) {
+                        mutated = true
+                        next = next.copy(diskPathOrUri = "", diskDisplayName = "")
+                    }
+                    if (isMissingLocalFile(next.isoPathOrUri)) {
+                        mutated = true
+                        next = next.copy(isoPathOrUri = "", isoDisplayName = "")
+                    }
+                    if (isMissingLocalFile(next.virtioDriversIsoPath)) {
+                        mutated = true
+                        next = next.copy(virtioDriversIsoPath = "")
+                    }
+                    next
+                }
+                var finalVms = healed
                 if (finalVms.none { it.architecture == GuestArchitecture.AARCH64 }) {
                     mutated = true
                     finalVms = finalVms + defaultAarch64StarterVms()

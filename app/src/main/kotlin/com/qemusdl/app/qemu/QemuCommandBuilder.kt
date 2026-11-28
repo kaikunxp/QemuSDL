@@ -166,7 +166,8 @@ object QemuCommandBuilder {
                         }
                     }
                     DisplayDevice.RAMFB -> {
-                        args += listOf("-vga", "none", "-device", "ramfb")
+                        // CONFIG_RAMFB is only built for AArch64; fall back safely on x86_64
+                        args += listOf("-vga", "std")
                     }
                     DisplayDevice.BOCHS_DISPLAY -> {
                         args += listOf("-vga", "none", "-device", "bochs-display")
@@ -178,7 +179,8 @@ object QemuCommandBuilder {
                         args += listOf("-vga", "std")
                     }
                     DisplayDevice.QXL -> {
-                        args += listOf("-device", "qxl-vga")
+                        // Built without libspice-server (CONFIG_QXL unset); fall back safely to VirtIO VGA
+                        args += listOf("-device", "virtio-vga,$resOpts")
                     }
                     DisplayDevice.VMWARE -> {
                         args += listOf("-vga", "vmware")

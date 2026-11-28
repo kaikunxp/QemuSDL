@@ -60,8 +60,8 @@ class VmViewportActivity : ComponentActivity() {
         val repository = VmRepository.getInstance(this)
         vmConfig = vmId?.let { repository.getVmById(it) } ?: VmConfig(name = "Quick x86_64 VM")
 
-        val resolvedDisk = resolveMediaPath(vmConfig.diskPathOrUri, readWrite = true)
-        val resolvedIso = resolveMediaPath(vmConfig.isoPathOrUri, readWrite = false)
+        val resolvedDisk = resolveMediaPath(vmConfig.diskPathOrUri, readWrite = true).orEmpty()
+        val resolvedIso = resolveMediaPath(vmConfig.isoPathOrUri, readWrite = false).orEmpty()
         qemuArgs = QemuCommandBuilder.buildArgs(
             config = vmConfig,
             resolvedDiskPath = resolvedDisk,
@@ -173,7 +173,9 @@ class VmViewportActivity : ComponentActivity() {
     private fun resolveMediaPath(pathOrUri: String, readWrite: Boolean): String? {
         val trimmed = pathOrUri.trim()
         if (trimmed.isEmpty()) return null
-        if (!trimmed.startsWith("content://")) return trimmed
+        if (!trimmed.startsWith("content://")) {
+            return if (java.io.File(trimmed).isFile) trimmed else null
+        }
         return runCatching {
             val mode = if (readWrite) "rw" else "r"
             val pfd = contentResolver.openFileDescriptor(Uri.parse(trimmed), mode)

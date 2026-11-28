@@ -20,6 +20,7 @@ import android.view.Menu
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.RelativeLayout
+import android.widget.Toast
 import com.qemusdl.app.usb.ActiveUsbPassthroughSession
 import com.qemusdl.app.usb.UsbPassthroughManager
 import java.io.File
@@ -241,15 +242,17 @@ class QemuSdlActivity : SDLActivity() {
         } else {
             null
         }
-        val resolvedDisk = resolveMediaPath(vmConfig.diskPathOrUri, readWrite = true)
-        val resolvedIso = resolveMediaPath(vmConfig.isoPathOrUri, readWrite = false)
+        val missingMediaWarnings = mutableListOf<String>()
+        val resolvedDisk = resolveMediaPathOrSkip(vmConfig.diskPathOrUri, readWrite = true, label = "disk", missingMediaWarnings)
+        val resolvedIso = resolveMediaPathOrSkip(vmConfig.isoPathOrUri, readWrite = false, label = "ISO", missingMediaWarnings)
         val resolvedVirtioIso = if (vmConfig.attachVirtioDriversIso && vmConfig.architecture != GuestArchitecture.PPC) {
             resolveMediaPath(vmConfig.virtioDriversIsoPath, readWrite = false)
                 ?: IsoDownloader.findVirtioDriversIso(this)?.absolutePath
+                ?: ""
         } else {
-            null
+            ""
         }
-        resolvedVirtioIsoName = resolvedVirtioIso?.let { File(it).name }
+        resolvedVirtioIsoName = resolvedVirtioIso.takeIf { it.isNotBlank() }?.let { File(it).name }
 
         // Prepare QEMU Guest Agent Unix socket (virtio-serial-pci -> org.qemu.guest_agent.0)
         if (vmConfig.guestAgentEnabled && vmConfig.architecture != GuestArchitecture.PPC) {
@@ -335,6 +338,13 @@ class QemuSdlActivity : SDLActivity() {
         }
 
         super.onCreate(savedInstanceState)
+        NativeQemuBridge.enableStdioLogcat()
+        android.util.Log.i("QemuSdlActivity", "Launching QEMU args: ${qemuFullArgs.joinToString(" ")}")
+        if (missingMediaWarnings.isNotEmpty()) {
+            val warning = "Skipped missing ${missingMediaWarnings.joinToString(", ")} — re-run Setup to recreate"
+            android.util.Log.w("QemuSdlActivity", warning)
+            Toast.makeText(this, warning, Toast.LENGTH_LONG).show()
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         runCatching {
             val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -828,10 +838,29 @@ class QemuSdlActivity : SDLActivity() {
         windowingState = inspected
     }
 
+    private fun resolveMediaPathOrSkip(
+        pathOrUri: String,
+        readWrite: Boolean,
+        label: String,
+        missingWarnings: MutableList<String>
+    ): String {
+        val trimmed = pathOrUri.trim()
+        if (trimmed.isEmpty()) return ""
+        val resolved = resolveMediaPath(trimmed, readWrite)
+        if (resolved.isNullOrBlank()) {
+            val display = if (trimmed.startsWith("content://")) label else "$label (${File(trimmed).name})"
+            missingWarnings += display
+            return ""
+        }
+        return resolved
+    }
+
     private fun resolveMediaPath(pathOrUri: String, readWrite: Boolean): String? {
         val trimmed = pathOrUri.trim()
         if (trimmed.isEmpty()) return null
-        if (!trimmed.startsWith("content://")) return trimmed
+        if (!trimmed.startsWith("content://")) {
+            return if (File(trimmed).isFile) trimmed else null
+        }
         return runCatching {
             val mode = if (readWrite) "rw" else "r"
             val pfd = contentResolver.openFileDescriptor(Uri.parse(trimmed), mode)
