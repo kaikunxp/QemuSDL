@@ -83,6 +83,18 @@ object DesktopWindowingHelper {
             Build.MANUFACTURER.equals("chromium", ignoreCase = true)
     }
 
+    /**
+     * Returns true on desktop / laptop Android platforms including GooglebookOS (Android Desktop / PC),
+     * ChromeOS (ARCVM), Samsung DeX, and Moto Ready For / Smart Connect.
+     */
+    fun isDesktopPlatform(context: Context): Boolean {
+        val pm = context.packageManager
+        val config = context.resources.configuration
+        val isDeskUiMode = (config.uiMode and Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_DESK
+        val hasPcFeature = pm.hasSystemFeature(PackageManager.FEATURE_PC)
+        return isDeXMode(context) || isChromebook(context) || hasPcFeature || isDeskUiMode
+    }
+
     fun isDesktopOrWindowedEnvironment(activity: Activity): Boolean {
         val state = inspect(activity)
         return state.isDesktopPlatform || state.isWindowed

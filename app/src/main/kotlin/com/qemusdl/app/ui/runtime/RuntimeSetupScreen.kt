@@ -16,8 +16,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -51,12 +55,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.qemusdl.app.ui.adaptive.AppTooltipBox
+import com.qemusdl.app.ui.adaptive.desktopHandCursor
+import com.qemusdl.app.ui.adaptive.desktopTextCursor
+import com.qemusdl.app.ui.adaptive.desktopWaitCursor
 import com.qemusdl.app.ui.editor.CreateDiskDialog
 import com.qemusdl.app.ui.library.VmLibraryViewModel
 import kotlinx.coroutines.launch
@@ -68,7 +77,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun RuntimeSetupScreen(
     viewModel: VmLibraryViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    showBackButton: Boolean = true
 ) {
     val status by viewModel.runtimeStatus.collectAsState()
     val disks by viewModel.disks.collectAsState()
@@ -77,7 +87,8 @@ fun RuntimeSetupScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    var showCreateDiskDialog by remember { mutableStateOf(false) }
+    val gridState = rememberLazyGridState()
+    var showCreateDiskDialog by rememberSaveable { mutableStateOf(false) }
 
     val soPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -92,29 +103,42 @@ fun RuntimeSetupScreen(
     val buildScriptCmd = "./scripts/build-sdl2-qemu-android.sh --abi=${status.abi}"
 
     Scaffold(
+        modifier = Modifier.desktopWaitCursor(isProbing),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Native SDL2 Runtime & Disks") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                    if (showBackButton) {
+                        AppTooltipBox(tooltip = "Back") {
+                            IconButton(onClick = onBack, modifier = Modifier.desktopHandCursor()) {
+                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                            }
+                        }
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.refreshRuntime() }) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "Re-probe native libs")
+                    AppTooltipBox(tooltip = "Re-probe native libs (Ctrl+R)") {
+                        IconButton(
+                            onClick = { viewModel.refreshRuntime() },
+                            modifier = Modifier.desktopHandCursor()
+                        ) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = "Re-probe native libs")
+                        }
                     }
                 }
             )
         }
     ) { innerPadding ->
-        LazyColumn(
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Adaptive(minSize = 400.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
             contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // Native Libraries Checklist
             item {
@@ -221,20 +245,24 @@ fun RuntimeSetupScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(
-                                    text = buildScriptCmd,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                IconButton(
-                                    onClick = {
-                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        cm.setPrimaryClip(ClipData.newPlainText("build-cmd", buildScriptCmd))
-                                        scope.launch { snackbarHostState.showSnackbar("Copied build command") }
+                                SelectionContainer(modifier = Modifier.weight(1f).desktopTextCursor()) {
+                                    Text(
+                                        text = buildScriptCmd,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                AppTooltipBox(tooltip = "Copy build command") {
+                                    IconButton(
+                                        onClick = {
+                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            cm.setPrimaryClip(ClipData.newPlainText("build-cmd", buildScriptCmd))
+                                            scope.launch { snackbarHostState.showSnackbar("Copied build command") }
+                                        },
+                                        modifier = Modifier.desktopHandCursor()
+                                    ) {
+                                        Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy command")
                                     }
-                                ) {
-                                    Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy command")
                                 }
                             }
                         }
@@ -243,14 +271,17 @@ fun RuntimeSetupScreen(
             }
 
             // Local Virtual Disk Manager
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Local Virtual Disks (${disks.size})", style = MaterialTheme.typography.titleLarge)
-                    FilledTonalButton(onClick = { showCreateDiskDialog = true }) {
+                    FilledTonalButton(
+                        onClick = { showCreateDiskDialog = true },
+                        modifier = Modifier.desktopHandCursor()
+                    ) {
                         Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("New Disk")
@@ -259,7 +290,7 @@ fun RuntimeSetupScreen(
             }
 
             if (disks.isEmpty()) {
-                item {
+                item(span = { GridItemSpan(maxLineSpan) }) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.large,

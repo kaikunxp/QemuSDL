@@ -1,5 +1,10 @@
 package com.qemusdl.app.ui.isos
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,8 +16,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -48,11 +56,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.FilterChip
@@ -61,6 +72,8 @@ import com.qemusdl.app.qemu.IsoCatalog
 import com.qemusdl.app.qemu.IsoCatalogEntry
 import com.qemusdl.app.qemu.IsoDownloadState
 import com.qemusdl.app.qemu.IsoDownloader
+import com.qemusdl.app.ui.adaptive.AppTooltipBox
+import com.qemusdl.app.ui.adaptive.desktopHandCursor
 import com.qemusdl.app.ui.library.VmLibraryViewModel
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -75,23 +88,42 @@ fun IsoDownloaderScreen(
     viewModel: VmLibraryViewModel,
     targetVmId: String? = null,
     onBack: () -> Unit,
-    onIsoSelectedForVm: (path: String, displayName: String) -> Unit = { _, _ -> }
+    onIsoSelectedForVm: (path: String, displayName: String) -> Unit = { _, _ -> },
+    showBackButton: Boolean = true
 ) {
+    val context = LocalContext.current
     val downloadStates by viewModel.isoDownloadStates.collectAsState()
     val downloadedIsos by viewModel.downloadedIsos.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val gridState = rememberLazyGridState()
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* Foreground service still runs even if notification visibility is denied */ }
+
+    fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     val targetVm = remember(targetVmId) { targetVmId?.let { viewModel.getVm(it) } }
-    var selectedArchFilter by remember(targetVm?.architecture) {
-        mutableStateOf<GuestArchitecture?>(targetVm?.architecture)
+    var selectedArchFilterName by rememberSaveable(targetVm?.architecture?.name) {
+        mutableStateOf(targetVm?.architecture?.name)
+    }
+    val selectedArchFilter = selectedArchFilterName?.let { name ->
+        GuestArchitecture.entries.firstOrNull { it.name == name }
     }
 
     val filteredCatalog = remember(selectedArchFilter) {
         IsoCatalog.entriesForArch(selectedArchFilter)
     }
 
-    var customUrl by remember { mutableStateOf("") }
+    var customUrl by rememberSaveable { mutableStateOf("") }
     val customState = downloadStates[IsoDownloader.CUSTOM_DOWNLOAD_ID] ?: IsoDownloadState.Idle
 
     Scaffold(
@@ -111,21 +143,28 @@ fun IsoDownloaderScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                    if (showBackButton) {
+                        AppTooltipBox(tooltip = "Back") {
+                            IconButton(onClick = onBack, modifier = Modifier.desktopHandCursor()) {
+                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                            }
+                        }
                     }
                 }
             )
         }
     ) { innerPadding ->
-        LazyColumn(
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Adaptive(minSize = 360.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
             contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "Curated x86_64, AArch64 & PowerPC OS Images",
@@ -137,14 +176,16 @@ fun IsoDownloaderScreen(
                     ) {
                         FilterChip(
                             selected = selectedArchFilter == null,
-                            onClick = { selectedArchFilter = null },
-                            label = { Text("All Architectures") }
+                            onClick = { selectedArchFilterName = null },
+                            label = { Text("All Architectures") },
+                            modifier = Modifier.desktopHandCursor()
                         )
                         GuestArchitecture.entries.forEach { arch ->
                             FilterChip(
                                 selected = selectedArchFilter == arch,
-                                onClick = { selectedArchFilter = arch },
-                                label = { Text(arch.badgeText) }
+                                onClick = { selectedArchFilterName = arch.name },
+                                label = { Text(arch.badgeText) },
+                                modifier = Modifier.desktopHandCursor()
                             )
                         }
                     }
@@ -161,14 +202,15 @@ fun IsoDownloaderScreen(
                     downloadedSizeBytes = existingFile?.sizeBytes,
                     canAttachToVm = targetVmId != null,
                     onDownload = {
+                        ensureNotificationPermission()
                         viewModel.startIsoDownload(
                             entry = entry,
+                            autoAttachVmId = targetVmId,
                             onComplete = { file ->
                                 scope.launch {
                                     snackbarHostState.showSnackbar("Downloaded ${file.name}")
                                 }
                                 if (targetVmId != null) {
-                                    viewModel.attachIsoToVm(targetVmId, file.absolutePath, file.name)
                                     onIsoSelectedForVm(file.absolutePath, file.name)
                                 }
                             },
@@ -188,7 +230,7 @@ fun IsoDownloaderScreen(
             }
 
             // Custom direct ISO URL downloader
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.large,
@@ -223,19 +265,17 @@ fun IsoDownloaderScreen(
                             onCancel = { viewModel.cancelIsoDownload(IsoDownloader.CUSTOM_DOWNLOAD_ID) }
                         )
 
-                        if (customState !is IsoDownloadState.Downloading &&
-                            customState !is IsoDownloadState.Resolving &&
-                            customState !is IsoDownloadState.Extracting
-                        ) {
+                        if (!customState.isActiveDownload) {
                             Button(
                                 onClick = {
+                                    ensureNotificationPermission()
                                     viewModel.startCustomIsoDownload(
                                         url = customUrl,
+                                        autoAttachVmId = targetVmId,
                                         onComplete = { file ->
                                             customUrl = ""
                                             scope.launch { snackbarHostState.showSnackbar("Saved ${file.name}") }
                                             if (targetVmId != null) {
-                                                viewModel.attachIsoToVm(targetVmId, file.absolutePath, file.name)
                                                 onIsoSelectedForVm(file.absolutePath, file.name)
                                             }
                                         },
@@ -256,7 +296,7 @@ fun IsoDownloaderScreen(
             }
 
             // Downloaded ISOs section
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(
                     text = "Downloaded ISOs (${downloadedIsos.size})",
                     style = MaterialTheme.typography.titleLarge
@@ -264,7 +304,7 @@ fun IsoDownloaderScreen(
             }
 
             if (downloadedIsos.isEmpty()) {
-                item {
+                item(span = { GridItemSpan(maxLineSpan) }) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.large,
@@ -362,9 +402,7 @@ private fun IsoCatalogCard(
     onCancel: () -> Unit,
     onAttach: (path: String, name: String) -> Unit
 ) {
-    val isBusy = state is IsoDownloadState.Resolving ||
-        state is IsoDownloadState.Downloading ||
-        state is IsoDownloadState.Extracting
+    val isBusy = state.isActiveDownload
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),

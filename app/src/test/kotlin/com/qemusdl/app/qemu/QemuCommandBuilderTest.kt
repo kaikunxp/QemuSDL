@@ -44,10 +44,22 @@ class QemuCommandBuilderTest {
         assertEquals("sdl,window-close=off,full-screen=on,show-cursor=on", args[displayIdx + 1])
         assertFalse("VNC must not be used", args.any { it.contains("vnc", ignoreCase = true) })
         assertTrue(args.contains("virtio-vga,xres=1280,yres=720"))
+        assertTrue(args.contains("tcg,thread=multi,tb-size=128"))
+        assertTrue(args.contains("iothread,id=io1"))
+        assertTrue(args.contains("virtio-blk-pci,drive=disk0,iothread=io1"))
+        assertTrue(args.contains("virtio-rng-pci"))
         assertTrue(args.any { it.contains("usb-tablet") })
         assertTrue(args.contains("user,model=e1000"))
         assertTrue(args.contains("/proc/self/fd/42"))
-        assertTrue(args.any { it.contains("file=/data/disks/alpine.qcow2") && it.contains("format=qcow2") })
+        assertTrue(
+            args.any {
+                it.contains("file=/data/disks/alpine.qcow2") &&
+                    it.contains("format=qcow2") &&
+                    it.contains("cache=writeback") &&
+                    it.contains("aio=threads") &&
+                    it.contains("l2-cache-size=8M")
+            }
+        )
     }
 
     @Test
@@ -61,9 +73,18 @@ class QemuCommandBuilderTest {
             extraArgs = "-rtc base=utc -name \"My Test VM\""
         )
 
-        val args = QemuCommandBuilder.buildArgs(vm, resolvedDiskPath = "/tmp/win.img")
+        val args = QemuCommandBuilder.buildArgs(vm, resolvedDiskPath = "/tmp/win.img", tcgTbSizeMb = 256)
         assertTrue(args.contains("sdl,window-close=off,full-screen=on,show-cursor=on"))
+        assertTrue(args.contains("tcg,thread=multi,tb-size=256"))
         assertTrue(args.contains("ahci,id=ahci"))
+        assertTrue(
+            args.any {
+                it.contains("file=/tmp/win.img") &&
+                    it.contains("cache=writeback") &&
+                    it.contains("aio=threads") &&
+                    !it.contains("l2-cache-size")
+            }
+        )
         assertTrue(args.contains("none"))
         assertTrue(args.contains("My Test VM"))
     }
@@ -175,7 +196,10 @@ class QemuCommandBuilderTest {
         )
 
         assertEquals("qemu-system-aarch64", args.first())
-        assertTrue(args.contains("virt,accel=tcg"))
+        val machineIdx = args.indexOf("-machine")
+        assertEquals("virt", args[machineIdx + 1])
+        val accelIdx = args.indexOf("-accel")
+        assertEquals("tcg,thread=multi,tb-size=128", args[accelIdx + 1])
         val cpuIdx = args.indexOf("-cpu")
         assertEquals("max", args[cpuIdx + 1])
 
@@ -234,7 +258,10 @@ class QemuCommandBuilderTest {
         )
 
         assertEquals("qemu-system-ppc", args.first())
-        assertTrue(args.contains("mac99,via=pmu,accel=tcg"))
+        val machineIdx = args.indexOf("-machine")
+        assertEquals("mac99,via=pmu", args[machineIdx + 1])
+        val accelIdx = args.indexOf("-accel")
+        assertEquals("tcg,thread=single,tb-size=128", args[accelIdx + 1])
         val cpuIdx = args.indexOf("-cpu")
         assertEquals("g4", args[cpuIdx + 1])
         val smpIdx = args.indexOf("-smp")
@@ -253,14 +280,17 @@ class QemuCommandBuilderTest {
         val bootIdx = args.indexOf("-boot")
         assertEquals("d", args[bootIdx + 1])
 
-        // No xHCI / no Venus GL / no intel-hda on Mac OS 9
+        // No xHCI / no usb-tablet / no Venus GL / no intel-hda / no virtio-rng on Mac OS 9
+        // (Mac OS 9 uses mac99's built-in OHCI usb-mouse; attaching usb-tablet hijacks pointer input!)
         assertFalse(args.any { it.contains("qemu-xhci") })
+        assertFalse(args.contains("usb-tablet"))
+        assertFalse(QemuCommandBuilder.usesAbsolutePointer(vm))
         assertFalse(args.any { it.contains("gl=es") })
         assertFalse(args.any { it.contains("intel-hda") })
+        assertFalse(args.contains("virtio-rng-pci"))
 
-        // OHCI USB tablet, IDE disk (index=0) + IDE CD-ROM (index=2), SunGEM NIC, USB audio
-        assertTrue(args.contains("usb-tablet"))
-        assertTrue(args.contains("file=/data/disks/macos9.qcow2,if=ide,index=0,format=qcow2,media=disk,cache=writeback"))
+        // IDE disk (index=0) + IDE CD-ROM (index=2), SunGEM NIC, USB audio
+        assertTrue(args.contains("file=/data/disks/macos9.qcow2,if=ide,index=0,format=qcow2,media=disk,cache=writeback,aio=threads,l2-cache-size=8M"))
         assertTrue(args.contains("file=/data/isos/macos922.iso,if=ide,index=2,format=raw,media=cdrom"))
         assertTrue(args.contains("user,model=sungem"))
         assertTrue(args.contains("usb-audio,audiodev=snd0"))
@@ -292,7 +322,10 @@ class QemuCommandBuilderTest {
             firmwareDir = "/data/files/qemu-firmware"
         )
 
-        assertTrue(args.contains("g3beige,accel=tcg"))
+        val machineIdx = args.indexOf("-machine")
+        assertEquals("g3beige", args[machineIdx + 1])
+        val accelIdx = args.indexOf("-accel")
+        assertEquals("tcg,thread=single,tb-size=128", args[accelIdx + 1])
         val memIdx = args.indexOf("-m")
         assertEquals("2048", args[memIdx + 1])
         val bootIdx = args.indexOf("-boot")

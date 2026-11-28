@@ -32,6 +32,12 @@ class VmRepository(private val appContext: Context) {
 
     fun getVmById(id: String): VmConfig? = _vms.value.firstOrNull { it.id == id }
 
+    fun getVmByName(name: String): VmConfig? {
+        val needle = name.trim()
+        if (needle.isEmpty()) return null
+        return _vms.value.firstOrNull { it.name.equals(needle, ignoreCase = true) }
+    }
+
     suspend fun upsertVm(config: VmConfig) = withContext(Dispatchers.IO) {
         val current = _vms.value.toMutableList()
         val idx = current.indexOfFirst { it.id == config.id }
@@ -295,7 +301,8 @@ class VmRepository(private val appContext: Context) {
             networkAdapter = NetworkAdapterModel.SUNGEM,
             audioEnabled = true,
             usbXhciEnabled = false,
-            usbTabletEnabled = true,
+            usbTabletEnabled = false,
+            mouseEmulationMode = MouseEmulationMode.TRACKPAD_RELATIVE,
             isSetupComplete = false,
             recommendedIsoId = "macos-921-ppc"
         )

@@ -1,10 +1,14 @@
 package com.qemusdl.app.ui.setup
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -19,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Album
@@ -50,12 +55,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +73,9 @@ import com.qemusdl.app.data.VmConfig
 import com.qemusdl.app.qemu.DiskFormat
 import com.qemusdl.app.qemu.IsoCatalog
 import com.qemusdl.app.qemu.IsoDownloadState
+import com.qemusdl.app.ui.adaptive.AppTooltipBox
+import com.qemusdl.app.ui.adaptive.desktopHandCursor
+import com.qemusdl.app.ui.adaptive.desktopWaitCursor
 import com.qemusdl.app.ui.isos.DownloadStateSection
 import com.qemusdl.app.ui.library.VmLibraryViewModel
 import kotlinx.coroutines.launch
@@ -82,7 +92,8 @@ fun VmSetupScreen(
     viewModel: VmLibraryViewModel,
     onBack: () -> Unit,
     onOpenIsoCatalog: () -> Unit,
-    onCompletedAndBoot: (VmConfig) -> Unit
+    onCompletedAndBoot: (VmConfig) -> Unit,
+    showBackButton: Boolean = true
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -102,19 +113,19 @@ fun VmSetupScreen(
         downloadedIsos.firstOrNull { it.name == rec.targetFileName }
     }
 
-    var selectedIsoPath by remember(sourceVm.isoPathOrUri, existingRecommendedIso?.path) {
+    var selectedIsoPath by rememberSaveable(vmId, sourceVm.isoPathOrUri, existingRecommendedIso?.path) {
         mutableStateOf(
             sourceVm.isoPathOrUri.ifBlank { existingRecommendedIso?.path.orEmpty() }
         )
     }
-    var selectedIsoName by remember(sourceVm.isoDisplayName, existingRecommendedIso?.name) {
+    var selectedIsoName by rememberSaveable(vmId, sourceVm.isoDisplayName, existingRecommendedIso?.name) {
         mutableStateOf(
             sourceVm.isoDisplayName.ifBlank { existingRecommendedIso?.name.orEmpty() }
         )
     }
 
-    var createDiskOnFinish by remember { mutableStateOf(sourceVm.diskPathOrUri.isBlank()) }
-    var diskSizeMb by remember(sourceVm.osPreset) {
+    var createDiskOnFinish by rememberSaveable(vmId) { mutableStateOf(sourceVm.diskPathOrUri.isBlank()) }
+    var diskSizeMb by rememberSaveable(vmId, sourceVm.osPreset) {
         mutableIntStateOf(
             when (sourceVm.osPreset) {
                 OsPreset.LINUX_ALPINE, OsPreset.LINUX_ALPINE_AARCH64 -> 4096
@@ -126,9 +137,10 @@ fun VmSetupScreen(
             }
         )
     }
-    var cpuCores by remember(sourceVm.cpuCores) { mutableIntStateOf(sourceVm.cpuCores) }
-    var memoryMb by remember(sourceVm.memoryMb) { mutableIntStateOf(sourceVm.memoryMb) }
+    var cpuCores by rememberSaveable(vmId, sourceVm.cpuCores) { mutableIntStateOf(sourceVm.cpuCores) }
+    var memoryMb by rememberSaveable(vmId, sourceVm.memoryMb) { mutableIntStateOf(sourceVm.memoryMb) }
     var isFinishing by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
 
     val isoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -150,9 +162,27 @@ fun VmSetupScreen(
         }
     }
 
-    val isDownloadingRecommended = recommendedDownloadState is IsoDownloadState.Resolving ||
-        recommendedDownloadState is IsoDownloadState.Downloading ||
-        recommendedDownloadState is IsoDownloadState.Extracting
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* Foreground service still runs even if user declines notification visibility */ }
+
+    fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    LaunchedEffect(recommendedDownloadState) {
+        if (recommendedDownloadState is IsoDownloadState.Completed) {
+            selectedIsoPath = recommendedDownloadState.filePath
+            selectedIsoName = recommendedDownloadState.fileName
+        }
+    }
+
+    val isDownloadingRecommended = recommendedDownloadState.isActiveDownload
 
     fun finishSetup(bootNow: Boolean) {
         if (isFinishing) return
@@ -185,17 +215,25 @@ fun VmSetupScreen(
     }
 
     Scaffold(
+        modifier = Modifier.desktopWaitCursor(isFinishing),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("First-Time VM Setup (${sourceVm.architecture.badgeText})") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                    if (showBackButton) {
+                        AppTooltipBox(tooltip = "Back") {
+                            IconButton(onClick = onBack, modifier = Modifier.desktopHandCursor()) {
+                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                            }
+                        }
                     }
                 },
                 actions = {
-                    TextButton(onClick = { finishSetup(bootNow = true) }) {
+                    TextButton(
+                        onClick = { finishSetup(bootNow = true) },
+                        modifier = Modifier.desktopHandCursor()
+                    ) {
                         Text("Skip")
                     }
                 }
@@ -203,6 +241,7 @@ fun VmSetupScreen(
         }
     ) { innerPadding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
@@ -302,8 +341,10 @@ fun VmSetupScreen(
                                     if (!isDownloadingRecommended) {
                                         Button(
                                             onClick = {
+                                                ensureNotificationPermission()
                                                 viewModel.startIsoDownload(
                                                     entry = recommendedIso,
+                                                    autoAttachVmId = sourceVm.id,
                                                     onComplete = { file ->
                                                         selectedIsoPath = file.absolutePath
                                                         selectedIsoName = file.name

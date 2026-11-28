@@ -47,12 +47,14 @@ case "$ABI" in
     MESON_CPU_FAMILY="aarch64"
     MESON_CPU="armv8-a"
     QEMU_CPU="aarch64"
+    ARCH_OPT_FLAGS="-moutline-atomics"
     ;;
   x86_64)
     TRIPLE="x86_64-linux-android"
     MESON_CPU_FAMILY="x86_64"
     MESON_CPU="x86_64"
     QEMU_CPU="x86_64"
+    ARCH_OPT_FLAGS=""
     ;;
   *)
     echo "Unsupported ABI: $ABI (supported: arm64-v8a, x86_64)"
@@ -232,6 +234,8 @@ if [[ ! -f "$JNI_OUT/libSDL2.so" || ! -f "$PREFIX/lib/libSDL2.so" ]]; then
   cmake --build "$WORK_DIR/build-sdl2-$ABI" -j"$JOBS"
   cmake --install "$WORK_DIR/build-sdl2-$ABI"
   cp -f "$PREFIX/lib/libSDL2.so" "$JNI_OUT/libSDL2.so"
+  "$STRIP" --strip-unneeded "$JNI_OUT/libSDL2.so"
+  rm -rf "$SDL2_HEADERS_OUT/include"
   cp -Rf "$PREFIX/include/SDL2" "$SDL2_HEADERS_OUT/include"
 else
   echo "[1/7] Reusing existing libSDL2.so (refreshing sdl2.pc prefix)..."
@@ -469,6 +473,7 @@ if [[ ! -f "$PREFIX/lib/libusb-1.0.so" ]]; then
 else
   echo "[7/8] Reusing existing libusb-1.0.so"
   cp -f "$PREFIX/lib/libusb-1.0.so" "$JNI_OUT/libusb-1.0.so"
+  "$STRIP" --strip-unneeded "$JNI_OUT/libusb-1.0.so"
 fi
 
 # ------------------------------------------------------------------------------
@@ -864,8 +869,8 @@ MESON="$(which meson)" \
   --disable-qom-cast-debug \
   --disable-werror \
   --disable-pie \
-  --extra-cflags="-fPIC -O3 -DNDEBUG -I$PREFIX/include -I$PREFIX/include/SDL2 -I$PREFIX/include/libusb-1.0 -I$PREFIX/include/virgl -I$PREFIX/include/epoxy" \
-  --extra-ldflags="-L$PREFIX/lib -lSDL2 -lusb-1.0 -lvirglrenderer -lepoxy -ldrm -lvulkan -lEGL -lGLESv3 -llog -landroid -lz"
+  --extra-cflags="-fPIC -O3 -fno-semantic-interposition ${ARCH_OPT_FLAGS} -I$PREFIX/include -I$PREFIX/include/SDL2 -I$PREFIX/include/libusb-1.0 -I$PREFIX/include/virgl -I$PREFIX/include/epoxy" \
+  --extra-ldflags="-Wl,-Bsymbolic-functions -L$PREFIX/lib -lSDL2 -lusb-1.0 -lvirglrenderer -lepoxy -ldrm -lvulkan -lEGL -lGLESv3 -llog -landroid -lz"
 
 echo "[11/11] Compiling libqemu-system-x86_64.so, libqemu-system-aarch64.so, and libqemu-system-ppc.so..."
 ninja -j"$JOBS" libqemu-system-x86_64.so libqemu-system-aarch64.so libqemu-system-ppc.so pc-bios/edk2-aarch64-code.fd pc-bios/edk2-arm-vars.fd

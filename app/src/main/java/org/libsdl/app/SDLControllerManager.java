@@ -773,56 +773,83 @@ class SDLGenericMotionListener_API26 extends SDLGenericMotionListener_API24 {
     @Override
     public boolean onGenericMotion(View v, MotionEvent event) {
         float x, y;
-        int action;
+        int action = event.getActionMasked();
 
-        switch ( event.getSource() ) {
-            case InputDevice.SOURCE_JOYSTICK:
-                return SDLControllerManager.handleJoystickMotionEvent(event);
+        if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
+            return SDLControllerManager.handleJoystickMotionEvent(event);
+        }
 
-            case InputDevice.SOURCE_MOUSE:
-            // DeX desktop mouse cursor is a separate non-standard input type.
-            case InputDevice.SOURCE_MOUSE | InputDevice.SOURCE_TOUCHSCREEN:
-                action = event.getActionMasked();
-                switch (action) {
-                    case MotionEvent.ACTION_SCROLL:
-                        x = event.getAxisValue(MotionEvent.AXIS_HSCROLL, 0);
-                        y = event.getAxisValue(MotionEvent.AXIS_VSCROLL, 0);
-                        SDLActivity.onNativeMouse(0, action, x, y, false);
-                        return true;
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)) {
+            switch (action) {
+                case MotionEvent.ACTION_SCROLL:
+                    x = event.getAxisValue(MotionEvent.AXIS_HSCROLL, 0);
+                    y = event.getAxisValue(MotionEvent.AXIS_VSCROLL, 0);
+                    SDLActivity.onNativeMouse(0, action, x, y, false);
+                    return true;
 
-                    case MotionEvent.ACTION_HOVER_MOVE:
+                case MotionEvent.ACTION_HOVER_MOVE:
+                case MotionEvent.ACTION_MOVE:
+                    x = event.getX(0);
+                    y = event.getY(0);
+                    SDLActivity.onNativeMouse(event.getButtonState(), MotionEvent.ACTION_HOVER_MOVE, x, y, true);
+                    return true;
+
+                case MotionEvent.ACTION_BUTTON_PRESS:
+                    SDLActivity.onNativeMouse(event.getButtonState(), MotionEvent.ACTION_DOWN, 0f, 0f, true);
+                    return true;
+
+                case MotionEvent.ACTION_BUTTON_RELEASE:
+                    SDLActivity.onNativeMouse(event.getButtonState(), MotionEvent.ACTION_UP, 0f, 0f, true);
+                    return true;
+
+                default:
+                    break;
+            }
+            return false;
+        }
+
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            switch (action) {
+                case MotionEvent.ACTION_SCROLL:
+                    x = event.getAxisValue(MotionEvent.AXIS_HSCROLL, 0);
+                    y = event.getAxisValue(MotionEvent.AXIS_VSCROLL, 0);
+                    SDLActivity.onNativeMouse(0, action, x, y, false);
+                    return true;
+
+                case MotionEvent.ACTION_HOVER_MOVE: {
+                    if (v instanceof SDLSurface) {
+                        float[] mapped = ((SDLSurface) v).mapPhysicalMouseToViewport(event.getX(0), event.getY(0));
+                        x = mapped[0];
+                        y = mapped[1];
+                    } else {
                         x = mapToGuestX(v, event.getX(0));
                         y = mapToGuestY(v, event.getY(0));
-                        SDLActivity.onNativeMouse(0, action, x, y, false);
-                        return true;
-
-                    default:
-                        break;
+                    }
+                    SDLActivity.onNativeMouse(0, action, x, y, false);
+                    return true;
                 }
-                break;
 
-            case InputDevice.SOURCE_MOUSE_RELATIVE:
-                action = event.getActionMasked();
-                switch (action) {
-                    case MotionEvent.ACTION_SCROLL:
-                        x = event.getAxisValue(MotionEvent.AXIS_HSCROLL, 0);
-                        y = event.getAxisValue(MotionEvent.AXIS_VSCROLL, 0);
-                        SDLActivity.onNativeMouse(0, action, x, y, false);
-                        return true;
-
-                    case MotionEvent.ACTION_HOVER_MOVE:
-                        x = event.getX(0);
-                        y = event.getY(0);
-                        SDLActivity.onNativeMouse(0, action, x, y, true);
-                        return true;
-
-                    default:
-                        break;
+                case MotionEvent.ACTION_BUTTON_PRESS:
+                case MotionEvent.ACTION_BUTTON_RELEASE: {
+                    // Consume physical right-click / middle-click here so Android desktop OS does not convert right-click to Back
+                    if (v instanceof SDLSurface) {
+                        float[] mapped = ((SDLSurface) v).mapPhysicalMouseToViewport(event.getX(0), event.getY(0));
+                        x = mapped[0];
+                        y = mapped[1];
+                    } else {
+                        x = mapToGuestX(v, event.getX(0));
+                        y = mapToGuestY(v, event.getY(0));
+                    }
+                    int sdlAction = (action == MotionEvent.ACTION_BUTTON_PRESS)
+                            ? MotionEvent.ACTION_DOWN
+                            : MotionEvent.ACTION_UP;
+                    SDLActivity.onNativeMouse(event.getButtonState(), sdlAction, x, y, false);
+                    return true;
                 }
-                break;
 
-            default:
-                break;
+                default:
+                    break;
+            }
         }
 
         // Event was not managed

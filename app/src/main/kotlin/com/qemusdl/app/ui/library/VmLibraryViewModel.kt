@@ -16,7 +16,6 @@ import com.qemusdl.app.qemu.IsoDownloader
 import com.qemusdl.app.sdl.NativeQemuBridge
 import com.qemusdl.app.sdl.RuntimeProbeStatus
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,7 +27,6 @@ class VmLibraryViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val repository = VmRepository.getInstance(application)
     private val isoDownloader = IsoDownloader.getInstance(application)
-    private val activeDownloadJobs = mutableMapOf<String, Job>()
 
     val vms: StateFlow<List<VmConfig>> = repository.vms
     val disks: StateFlow<List<VirtualDiskInfo>> = repository.disks
@@ -43,9 +41,17 @@ class VmLibraryViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         refreshRuntime()
+        syncLauncherShortcuts()
     }
 
     fun getVm(id: String): VmConfig? = repository.getVmById(id)
+
+    fun pinVmShortcut(vm: VmConfig): ShortcutPinResult =
+        VmShortcutManager.pinVmShortcut(getApplication(), vm)
+
+    private fun syncLauncherShortcuts() {
+        VmShortcutManager.syncShortcuts(getApplication(), repository.vms.value)
+    }
 
     fun refreshRuntime() {
         viewModelScope.launch {
@@ -63,18 +69,22 @@ class VmLibraryViewModel(application: Application) : AndroidViewModel(applicatio
     fun saveVm(config: VmConfig) {
         viewModelScope.launch {
             repository.upsertVm(config)
+            syncLauncherShortcuts()
         }
     }
 
     fun cloneVm(id: String) {
         viewModelScope.launch {
             repository.cloneVm(id)
+            syncLauncherShortcuts()
         }
     }
 
     fun deleteVm(id: String) {
         viewModelScope.launch {
             repository.deleteVm(id)
+            VmShortcutManager.disableVmShortcut(getApplication(), id)
+            syncLauncherShortcuts()
         }
     }
 
@@ -96,36 +106,44 @@ class VmLibraryViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun startIsoDownload(
         entry: IsoCatalogEntry,
+        autoAttachVmId: String? = null,
         onComplete: (File) -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
-        if (activeDownloadJobs[entry.id]?.isActive == true) return
-        val job = viewModelScope.launch {
-            val result = isoDownloader.downloadCatalogEntry(entry)
-            result.onSuccess(onComplete)
-            result.onFailure { err -> onError(err.message ?: "Download failed") }
-        }
-        activeDownloadJobs[entry.id] = job
+        isoDownloader.startCatalogDownload(
+            entry = entry,
+            onComplete = { file ->
+                if (autoAttachVmId != null) {
+                    attachIsoToVm(autoAttachVmId, file.absolutePath, file.name)
+                }
+                onComplete(file)
+            },
+            onError = onError
+        )
     }
 
     fun startCustomIsoDownload(
         url: String,
         preferredName: String? = null,
+        autoAttachVmId: String? = null,
         onComplete: (File) -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
-        val id = IsoDownloader.CUSTOM_DOWNLOAD_ID
-        if (activeDownloadJobs[id]?.isActive == true) return
-        val job = viewModelScope.launch {
-            val result = isoDownloader.downloadCustomUrl(url, preferredName)
-            result.onSuccess(onComplete)
-            result.onFailure { err -> onError(err.message ?: "Download failed") }
-        }
-        activeDownloadJobs[id] = job
+        isoDownloader.startCustomDownload(
+            urlString = url,
+            preferredFileName = preferredName,
+            onComplete = { file ->
+                if (autoAttachVmId != null) {
+                    attachIsoToVm(autoAttachVmId, file.absolutePath, file.name)
+                }
+                onComplete(file)
+            },
+            onError = onError
+        )
     }
 
     fun cancelIsoDownload(id: String) {
-        activeDownloadJobs.remove(id)?.cancel()
+        isoDownloader.cancelDownload(id)
         isoDownloader.clearError(id)
     }
 

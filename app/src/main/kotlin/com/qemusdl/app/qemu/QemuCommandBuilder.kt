@@ -5,6 +5,7 @@ import com.qemusdl.app.data.DiskInterface
 import com.qemusdl.app.data.DisplayDevice
 import com.qemusdl.app.data.GuestArchitecture
 import com.qemusdl.app.data.MachineType
+import com.qemusdl.app.data.OsPreset
 import com.qemusdl.app.data.VmConfig
 
 /**
@@ -13,6 +14,19 @@ import com.qemusdl.app.data.VmConfig
  */
 object QemuCommandBuilder {
 
+    const val DEFAULT_TCG_TB_SIZE_MB = 128
+
+    /**
+     * Returns true when this VM attaches an absolute HID tablet (`usb-tablet`) that QEMU routes
+     * absolute pointer coordinates to. Classic Mac OS 9 has no USB absolute tablet driver and uses
+     * QEMU's built-in relative OHCI `usb-mouse` (mac99,via=pmu) or `adb-mouse` (pmu-adb/cuda/g3beige).
+     */
+    fun usesAbsolutePointer(config: VmConfig): Boolean = when (config.architecture) {
+        GuestArchitecture.AARCH64 -> true
+        GuestArchitecture.X86_64 -> config.usbTabletEnabled
+        GuestArchitecture.PPC -> config.usbTabletEnabled && config.osPreset != OsPreset.MACOS_9
+    }
+
     fun buildArgs(
         config: VmConfig,
         resolvedDiskPath: String? = null,
@@ -20,7 +34,8 @@ object QemuCommandBuilder {
         firmwareDir: String? = null,
         edk2CodePath: String? = null,
         edk2VarsPath: String? = null,
-        activeUsbDeviceFds: Map<String, Int> = emptyMap()
+        activeUsbDeviceFds: Map<String, Int> = emptyMap(),
+        tcgTbSizeMb: Int = DEFAULT_TCG_TB_SIZE_MB
     ): List<String> {
         val args = mutableListOf<String>()
         val arch = config.architecture
@@ -37,17 +52,19 @@ object QemuCommandBuilder {
         } else {
             MachineType.defaultForArch(arch)
         }
-        args += listOf("-machine", "${effectiveMachine.qemuFlag},accel=tcg")
-
-        val effectiveCpu = config.cpuModel.ifBlank { arch.defaultCpuModel }
-        args += listOf("-cpu", effectiveCpu)
-
         // PowerPC mac99 and g3beige machines support at most 1 CPU core (mc->max_cpus = 1 in QEMU)
         val effectiveCores = if (arch == GuestArchitecture.PPC) {
             1
         } else {
             config.cpuCores.coerceIn(1, 8)
         }
+        val tcgThreadMode = if (effectiveCores > 1) "multi" else "single"
+        val effectiveTbSizeMb = tcgTbSizeMb.coerceIn(64, 512)
+        args += listOf("-machine", effectiveMachine.qemuFlag)
+        args += listOf("-accel", "tcg,thread=$tcgThreadMode,tb-size=$effectiveTbSizeMb")
+
+        val effectiveCpu = config.cpuModel.ifBlank { arch.defaultCpuModel }
+        args += listOf("-cpu", effectiveCpu)
         args += listOf("-smp", effectiveCores.toString())
 
         // Classic PowerPC Mac machines (mac99 / g3beige) support up to 2048 MB RAM (512 MB recommended for Mac OS 9)
@@ -188,13 +205,16 @@ object QemuCommandBuilder {
             )
         when (arch) {
             GuestArchitecture.PPC -> {
-                // mac99 automatically provides a USB 1.1 pci-ohci controller; g3beige only creates it with -usb.
-                // Mac OS 9 does NOT support USB 3.0 xHCI, so usb-tablet, usb-audio, and usb-host attach to OHCI.
-                val needsOhciBus = config.usbTabletEnabled || config.audioEnabled || enabledUsbDevices.isNotEmpty()
+                // mac99 automatically creates pci-ohci + usb-kbd + usb-mouse (via=pmu) or adb-keyboard + adb-mouse (cuda/pmu-adb).
+                // g3beige only creates pci-ohci when -usb is passed.
+                // Classic Mac OS 9 has NO driver for QEMU's usb-tablet, and attaching usb-tablet hijacks
+                // pointer input away from usb-mouse / adb-mouse (and exhausts OHCI's 3 ports with usb-audio).
+                val attachPpcTablet = usesAbsolutePointer(config)
+                val needsOhciBus = attachPpcTablet || config.audioEnabled || enabledUsbDevices.isNotEmpty()
                 if (needsOhciBus && effectiveMachine == MachineType.G3_BEIGE) {
                     args += "-usb"
                 }
-                if (config.usbTabletEnabled) {
+                if (attachPpcTablet) {
                     args += listOf("-device", "usb-tablet")
                 }
             }
@@ -233,37 +253,46 @@ object QemuCommandBuilder {
             }
         }
 
-        // Primary Disk Image
+        // Primary Disk Image (cache=writeback + aio=threads + 8 MiB QCOW2 L2 cache; VirtIO uses dedicated IOThread)
         val diskTarget = (resolvedDiskPath ?: config.diskPathOrUri).trim()
         if (diskTarget.isNotEmpty()) {
             val format = if (diskTarget.endsWith(".qcow2", ignoreCase = true)) "qcow2" else "raw"
+            val qcow2CacheOpt = if (format == "qcow2") ",l2-cache-size=8M" else ""
             when {
+                config.diskInterface == DiskInterface.VIRTIO -> {
+                    args += listOf(
+                        "-object", "iothread,id=io1",
+                        "-drive", "id=disk0,file=$diskTarget,if=none,format=$format,cache=writeback,aio=threads$qcow2CacheOpt",
+                        "-device", "virtio-blk-pci,drive=disk0,iothread=io1"
+                    )
+                }
                 arch == GuestArchitecture.PPC -> {
                     // PowerMac mac99 / g3beige use built-in MacIO IDE controller (index=0 = primary master hard disk)
-                    if (config.diskInterface == DiskInterface.VIRTIO) {
-                        args += listOf(
-                            "-drive",
-                            "file=$diskTarget,if=virtio,format=$format,cache=writeback"
-                        )
-                    } else {
-                        args += listOf(
-                            "-drive",
-                            "file=$diskTarget,if=ide,index=0,format=$format,media=disk,cache=writeback"
-                        )
-                    }
+                    args += listOf(
+                        "-drive",
+                        "file=$diskTarget,if=ide,index=0,format=$format,media=disk,cache=writeback,aio=threads$qcow2CacheOpt"
+                    )
                 }
                 config.diskInterface == DiskInterface.SATA || (arch == GuestArchitecture.AARCH64 && config.diskInterface == DiskInterface.IDE) -> {
                     args += listOf("-device", "ahci,id=ahci")
-                    args += listOf("-drive", "id=disk0,file=$diskTarget,if=none,format=$format")
+                    args += listOf(
+                        "-drive",
+                        "id=disk0,file=$diskTarget,if=none,format=$format,cache=writeback,aio=threads$qcow2CacheOpt"
+                    )
                     args += listOf("-device", "ide-hd,drive=disk0,bus=ahci.0")
                 }
                 else -> {
                     args += listOf(
                         "-drive",
-                        "file=$diskTarget,if=${config.diskInterface.qemuIf},format=$format,cache=writeback"
+                        "file=$diskTarget,if=${config.diskInterface.qemuIf},format=$format,cache=writeback,aio=threads$qcow2CacheOpt"
                     )
                 }
             }
+        }
+
+        // Hardware RNG entropy source for x86_64 & AArch64 (prevents Linux boot entropy stalls; ignored by other OSes)
+        if (arch != GuestArchitecture.PPC) {
+            args += listOf("-device", "virtio-rng-pci")
         }
 
         // Bootable ISO / CD-ROM

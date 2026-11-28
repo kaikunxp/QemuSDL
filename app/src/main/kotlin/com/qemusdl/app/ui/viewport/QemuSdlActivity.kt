@@ -1,5 +1,6 @@
 package com.qemusdl.app.ui.viewport
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -7,9 +8,13 @@ import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.os.Process
 import android.system.Os
 import android.view.KeyEvent
+import android.view.KeyboardShortcutGroup
+import android.view.KeyboardShortcutInfo
+import android.view.Menu
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.RelativeLayout
@@ -99,6 +104,8 @@ import com.qemusdl.app.data.VmConfig
 import com.qemusdl.app.data.VmRepository
 import com.qemusdl.app.qemu.QemuCommandBuilder
 import com.qemusdl.app.qemu.QemuFirmwareManager
+import com.qemusdl.app.ui.adaptive.AppTooltipBox
+import com.qemusdl.app.ui.adaptive.desktopHandCursor
 import com.qemusdl.app.ui.theme.QemuSDLTheme
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
@@ -129,6 +136,7 @@ class QemuSdlActivity : SDLActivity() {
     private var firmwareDirPath: String? = null
     private var cursorUiState by mutableStateOf(VirtualCursorUiState())
     private var windowingState by mutableStateOf(WindowingEnvironmentState())
+    private var pointerCaptured by mutableStateOf(false)
     private var hasEverDetectedWindowed = false
 
     override fun getLibraries(): Array<String> {
@@ -163,6 +171,21 @@ class QemuSdlActivity : SDLActivity() {
 
     override fun getArguments(): Array<String> =
         qemuFullArgs.drop(1).toTypedArray()
+
+    private fun computeRecommendedTcgTbSizeMb(): Int {
+        val totalRamBytes = runCatching {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val memInfo = ActivityManager.MemoryInfo()
+            am?.getMemoryInfo(memInfo)
+            memInfo.totalMem
+        }.getOrDefault(0L)
+        val totalRamGb = totalRamBytes / (1024L * 1024L * 1024L)
+        return when {
+            totalRamGb >= 8L -> 256
+            totalRamGb >= 6L -> 192
+            else -> QemuCommandBuilder.DEFAULT_TCG_TB_SIZE_MB
+        }
+    }
 
     private fun resolveTargetConfig(): VmConfig {
         intent?.getStringExtra(EXTRA_VM_CONFIG_JSON)?.let { raw ->
@@ -209,7 +232,8 @@ class QemuSdlActivity : SDLActivity() {
             firmwareDir = firmwareDirPath,
             edk2CodePath = pflashFiles?.first?.absolutePath,
             edk2VarsPath = pflashFiles?.second?.absolutePath,
-            activeUsbDeviceFds = activeUsbFds
+            activeUsbDeviceFds = activeUsbFds,
+            tcgTbSizeMb = computeRecommendedTcgTbSizeMb()
         )
 
         // Configure SDL2 video/render/audio hints and Android upstream SLIRP DNS servers
@@ -227,16 +251,29 @@ class QemuSdlActivity : SDLActivity() {
 
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        runCatching {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (powerManager?.isSustainedPerformanceModeSupported == true) {
+                window.setSustainedPerformanceMode(true)
+            }
+        }
 
         val initialWindowing = DesktopWindowingHelper.inspect(this)
         hasEverDetectedWindowed = initialWindowing.showFullscreenButton
         val startFullscreen = !initialWindowing.showFullscreenButton
         applyFullscreenState(startFullscreen)
 
-        // Apply initial viewport scaling, mouse emulation mode, and live cursor listener on SDLSurface
+        // Apply initial viewport scaling, mouse emulation mode, pointer capture, and live cursor listener on SDLSurface
+        val isRelativeGuest = !QemuCommandBuilder.usesAbsolutePointer(vmConfig)
         mSurface?.setGuestResolution(vmConfig.resolution.width, vmConfig.resolution.height)
         mSurface?.setScalingMode(vmConfig.scalingMode.nativeCode)
+        mSurface?.setRelativeGuestPointer(isRelativeGuest)
         mSurface?.setMouseEmulationMode(vmConfig.mouseEmulationMode.ordinal)
+        mSurface?.setPointerCaptureListener { captured ->
+            runOnUiThread {
+                pointerCaptured = captured
+            }
+        }
         mSurface?.setCursorListener { sx, sy, visible, leftDown, rightDown ->
             runOnUiThread {
                 cursorUiState = VirtualCursorUiState(
@@ -273,7 +310,10 @@ class QemuSdlActivity : SDLActivity() {
                             firmwarePath = firmwareDirPath ?: "Not bundled",
                             showFullscreenButton = windowingState.showFullscreenButton,
                             isFullscreen = windowingState.isFullscreen,
+                            isRelativeGuestPointer = isRelativeGuest,
+                            isPointerCaptured = pointerCaptured,
                             onToggleFullscreen = { toggleFullscreen() },
+                            onTogglePointerCapture = { mSurface?.togglePointerCapture() },
                             onScalingModeChanged = { newScale ->
                                 vmConfig = vmConfig.copy(scalingMode = newScale)
                                 mSurface?.setScalingMode(newScale.nativeCode)
@@ -320,8 +360,49 @@ class QemuSdlActivity : SDLActivity() {
         }
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            // F11 or Alt+Enter toggles true desktop fullscreen on GooglebookOS / ChromeOS / DeX
+            if (event.keyCode == KeyEvent.KEYCODE_F11 ||
+                (windowingState.showFullscreenButton && event.isAltPressed && event.keyCode == KeyEvent.KEYCODE_ENTER)
+            ) {
+                toggleFullscreen()
+                return true
+            }
+            // Ctrl+Alt+G toggles Android Pointer Capture (matches desktop QEMU mouse grab shortcut)
+            if (event.isCtrlPressed && event.isAltPressed && event.keyCode == KeyEvent.KEYCODE_G) {
+                mSurface?.togglePointerCapture()
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onProvideKeyboardShortcuts(
+        data: MutableList<KeyboardShortcutGroup>?,
+        menu: Menu?,
+        deviceId: Int
+    ) {
+        super.onProvideKeyboardShortcuts(data, menu, deviceId)
+        val vmViewportShortcuts = KeyboardShortcutGroup(
+            "VM Viewport",
+            listOf(
+                KeyboardShortcutInfo("Toggle Full Screen", KeyEvent.KEYCODE_F11, 0),
+                KeyboardShortcutInfo(
+                    "Toggle Mouse Pointer Capture",
+                    KeyEvent.KEYCODE_G,
+                    KeyEvent.META_CTRL_ON or KeyEvent.META_ALT_ON
+                )
+            )
+        )
+        data?.add(vmViewportShortcuts)
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus && mSurface?.isPointerCaptureActive == true) {
+            mSurface?.setPointerCapture(false)
+        }
         if (hasFocus && windowingState.isFullscreen) {
             applyFullscreenState(true)
         }
@@ -545,7 +626,10 @@ private fun QemuSdlOverlayHud(
     firmwarePath: String,
     showFullscreenButton: Boolean,
     isFullscreen: Boolean,
+    isRelativeGuestPointer: Boolean,
+    isPointerCaptured: Boolean,
     onToggleFullscreen: () -> Unit,
+    onTogglePointerCapture: () -> Unit,
     onScalingModeChanged: (SdlScalingMode) -> Unit,
     onMouseEmulationModeChanged: (MouseEmulationMode) -> Unit,
     onTrackpadSensitivityChanged: (Float) -> Unit,
@@ -594,6 +678,7 @@ private fun QemuSdlOverlayHud(
                 .statusBarsPadding()
                 .padding(12.dp)
                 .clip(RoundedCornerShape(100))
+                .desktopHandCursor()
                 .clickable { hudVisible = !hudVisible },
             shape = RoundedCornerShape(100),
             color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
@@ -622,7 +707,7 @@ private fun QemuSdlOverlayHud(
             }
         }
 
-        // Top-right Full Screen button on desktop / windowed platforms (Samsung DeX, Moto Ready For, ChromeOS, etc.)
+        // Top-right Desktop controls (Pointer Capture for relative guests + Full Screen F11)
         AnimatedVisibility(
             visible = showFullscreenButton && hudVisible,
             enter = fadeIn(),
@@ -632,35 +717,89 @@ private fun QemuSdlOverlayHud(
                 .statusBarsPadding()
                 .padding(12.dp)
         ) {
-            Surface(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(100))
-                    .clickable { onToggleFullscreen() },
-                shape = RoundedCornerShape(100),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
-                contentColor = MaterialTheme.colorScheme.onSurface
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                if (isRelativeGuestPointer) {
+                    AppTooltipBox(
+                        tooltip = if (isPointerCaptured) {
+                            "Release captured mouse (Esc or Ctrl+Alt+G)"
+                        } else {
+                            "Capture physical mouse for relative guest (Ctrl+Alt+G)"
+                        }
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(100))
+                                .desktopHandCursor()
+                                .clickable { onTogglePointerCapture() },
+                            shape = RoundedCornerShape(100),
+                            color = if (isPointerCaptured) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.92f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f)
+                            },
+                            contentColor = if (isPointerCaptured) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Mouse,
+                                    contentDescription = if (isPointerCaptured) "Release mouse" else "Capture mouse",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = if (isPointerCaptured) "Mouse Locked (Esc)" else "Capture Mouse",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                        }
+                    }
+                }
+
+                AppTooltipBox(
+                    tooltip = if (isFullscreen) "Exit Full Screen (F11)" else "Full Screen (F11)"
                 ) {
-                    Icon(
-                        imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                        contentDescription = if (isFullscreen) "Exit full screen" else "Full screen",
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = if (isFullscreen) "Exit Full Screen" else "Full Screen",
-                        style = MaterialTheme.typography.labelMedium
-                    )
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(100))
+                            .desktopHandCursor()
+                            .clickable { onToggleFullscreen() },
+                        shape = RoundedCornerShape(100),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                                contentDescription = if (isFullscreen) "Exit full screen" else "Full screen",
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = if (isFullscreen) "Exit Full Screen" else "Full Screen",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // Quick Left / Right click buttons on bottom-start when in Trackpad or Hover & Tap mode
+        // Quick Left / Right click buttons on bottom-start when using touch Trackpad / Hover & Tap
         AnimatedVisibility(
-            visible = hudVisible && mouseEmulationMode != MouseEmulationMode.DIRECT_TOUCH,
+            visible = hudVisible && !isPointerCaptured && mouseEmulationMode != MouseEmulationMode.DIRECT_TOUCH,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -786,23 +925,31 @@ private fun QemuSdlOverlayHud(
                     expanded = true,
                     colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors(),
                     floatingActionButton = {
-                        FloatingToolbarDefaults.VibrantFloatingActionButton(
-                            onClick = { showMonitorSheet = true }
-                        ) {
-                            Icon(Icons.Rounded.Terminal, contentDescription = "VM Settings & Power")
+                        AppTooltipBox(tooltip = "VM Settings & Monitor") {
+                            FloatingToolbarDefaults.VibrantFloatingActionButton(
+                                onClick = { showMonitorSheet = true },
+                                modifier = Modifier.desktopHandCursor()
+                            ) {
+                                Icon(Icons.Rounded.Terminal, contentDescription = "VM Settings & Power")
+                            }
                         }
                     }
                 ) {
                     Box {
-                        IconButton(onClick = { showMouseMenu = true }) {
-                            Icon(
-                                imageVector = when (mouseEmulationMode) {
-                                    MouseEmulationMode.TRACKPAD_RELATIVE -> Icons.Rounded.Mouse
-                                    MouseEmulationMode.DIRECT_TOUCH -> Icons.Rounded.TouchApp
-                                    MouseEmulationMode.DIRECT_HOVER_TAP -> Icons.Rounded.Tune
-                                },
-                                contentDescription = "Select mouse emulation mode"
-                            )
+                        AppTooltipBox(tooltip = "Mouse emulation mode") {
+                            IconButton(
+                                onClick = { showMouseMenu = true },
+                                modifier = Modifier.desktopHandCursor()
+                            ) {
+                                Icon(
+                                    imageVector = when (mouseEmulationMode) {
+                                        MouseEmulationMode.TRACKPAD_RELATIVE -> Icons.Rounded.Mouse
+                                        MouseEmulationMode.DIRECT_TOUCH -> Icons.Rounded.TouchApp
+                                        MouseEmulationMode.DIRECT_HOVER_TAP -> Icons.Rounded.Tune
+                                    },
+                                    contentDescription = "Select mouse emulation mode"
+                                )
+                            }
                         }
                         DropdownMenu(
                             expanded = showMouseMenu,
@@ -833,8 +980,13 @@ private fun QemuSdlOverlayHud(
                     }
 
                     Box {
-                        IconButton(onClick = { showScalingMenu = true }) {
-                            Icon(Icons.Rounded.AspectRatio, contentDescription = "Select viewport scaling")
+                        AppTooltipBox(tooltip = "Viewport scaling") {
+                            IconButton(
+                                onClick = { showScalingMenu = true },
+                                modifier = Modifier.desktopHandCursor()
+                            ) {
+                                Icon(Icons.Rounded.AspectRatio, contentDescription = "Select viewport scaling")
+                            }
                         }
                         DropdownMenu(
                             expanded = showScalingMenu,
@@ -864,22 +1016,33 @@ private fun QemuSdlOverlayHud(
                         }
                     }
 
-                    IconButton(onClick = onShowKeyboard) {
-                        Icon(Icons.Rounded.Keyboard, contentDescription = "Toggle soft keyboard")
-                    }
-                    IconButton(onClick = { showSpecialKeys = !showSpecialKeys }) {
-                        Icon(Icons.Rounded.KeyboardCommandKey, contentDescription = "Special keys bar")
-                    }
-                    if (showFullscreenButton) {
-                        IconButton(onClick = onToggleFullscreen) {
-                            Icon(
-                                imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                                contentDescription = if (isFullscreen) "Exit full screen" else "Full screen"
-                            )
+                    AppTooltipBox(tooltip = "Toggle soft keyboard") {
+                        IconButton(onClick = onShowKeyboard, modifier = Modifier.desktopHandCursor()) {
+                            Icon(Icons.Rounded.Keyboard, contentDescription = "Toggle soft keyboard")
                         }
                     }
-                    IconButton(onClick = onPowerOff) {
-                        Icon(Icons.Rounded.PowerSettingsNew, contentDescription = "Power off VM")
+                    AppTooltipBox(tooltip = "Special keys bar") {
+                        IconButton(
+                            onClick = { showSpecialKeys = !showSpecialKeys },
+                            modifier = Modifier.desktopHandCursor()
+                        ) {
+                            Icon(Icons.Rounded.KeyboardCommandKey, contentDescription = "Special keys bar")
+                        }
+                    }
+                    if (showFullscreenButton) {
+                        AppTooltipBox(tooltip = if (isFullscreen) "Exit Full Screen (F11)" else "Full Screen (F11)") {
+                            IconButton(onClick = onToggleFullscreen, modifier = Modifier.desktopHandCursor()) {
+                                Icon(
+                                    imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                                    contentDescription = if (isFullscreen) "Exit full screen" else "Full screen"
+                                )
+                            }
+                        }
+                    }
+                    AppTooltipBox(tooltip = "Power off VM") {
+                        IconButton(onClick = onPowerOff, modifier = Modifier.desktopHandCursor()) {
+                            Icon(Icons.Rounded.PowerSettingsNew, contentDescription = "Power off VM")
+                        }
                     }
                 }
             }

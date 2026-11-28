@@ -6,15 +6,15 @@ plugins {
 
 android {
   namespace = "com.qemusdl.app"
-  compileSdk = 36
+  compileSdk = 37
   ndkVersion = "28.2.13676358"
 
   defaultConfig {
     applicationId = "com.qemusdl.app"
     minSdk = 31
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1.0"
+    versionCode = 3
+    versionName = "1.2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -169,8 +169,11 @@ dependencies {
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
 
-  // Navigation 3
+  // Navigation 3 & Material 3 Adaptive
   implementation(libs.androidx.navigation3.ui)
   implementation(libs.androidx.navigation3.runtime)
   implementation(libs.androidx.lifecycle.viewmodel.navigation3)
+  implementation(libs.androidx.material3.adaptive)
+  implementation(libs.androidx.material3.adaptive.layout)
+  implementation(libs.androidx.material3.adaptive.navigation3)
 }

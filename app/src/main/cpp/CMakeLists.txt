@@ -18,7 +18,11 @@ target_include_directories(qemusdl_bridge PRIVATE
 )
 
 target_compile_options(qemusdl_bridge PRIVATE
-    $<$<CONFIG:Release>:-O3 -DNDEBUG -fvisibility=hidden>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG -fvisibility=hidden -fno-semantic-interposition>
+)
+
+target_link_options(qemusdl_bridge PRIVATE
+    $<$<CONFIG:Release>:-Wl,-Bsymbolic-functions>
 )
 
 find_library(ANDROID_LIB android)

@@ -72,4 +72,23 @@ class IsoCatalogTest {
         assertNotNull(debianMatch)
         assertEquals("debian-12.10.0-arm64-netinst.iso", debianMatch!!.groupValues[1])
     }
+
+    @Test
+    fun parseContentRangeTotalHandlesValidAndInvalidHeaders() {
+        assertEquals(4096L, IsoDownloader.parseContentRangeTotal("bytes 1024-2047/4096"))
+        assertEquals(671084544L, IsoDownloader.parseContentRangeTotal("bytes */671084544"))
+        assertEquals(-1L, IsoDownloader.parseContentRangeTotal("bytes 0-100/*"))
+        assertEquals(-1L, IsoDownloader.parseContentRangeTotal(null))
+        assertEquals(-1L, IsoDownloader.parseContentRangeTotal("invalid"))
+    }
+
+    @Test
+    fun downloadStateIsActiveMatchesInProgressStates() {
+        org.junit.Assert.assertFalse(IsoDownloadState.Idle.isActiveDownload)
+        org.junit.Assert.assertTrue(IsoDownloadState.Resolving().isActiveDownload)
+        org.junit.Assert.assertTrue(IsoDownloadState.Downloading(100L, 1000L, 50L).isActiveDownload)
+        org.junit.Assert.assertTrue(IsoDownloadState.Extracting().isActiveDownload)
+        org.junit.Assert.assertFalse(IsoDownloadState.Failed("network").isActiveDownload)
+        org.junit.Assert.assertFalse(IsoDownloadState.Completed("/tmp/test.iso", "test.iso").isActiveDownload)
+    }
 }

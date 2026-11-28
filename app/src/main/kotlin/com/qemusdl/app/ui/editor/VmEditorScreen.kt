@@ -18,7 +18,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import android.app.Activity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -63,10 +67,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,8 +96,18 @@ import com.qemusdl.app.data.SdlScalingMode
 import com.qemusdl.app.data.VmConfig
 import com.qemusdl.app.qemu.DiskFormat
 import com.qemusdl.app.qemu.QemuCommandBuilder
+import com.qemusdl.app.ui.adaptive.AppTooltipBox
+import com.qemusdl.app.ui.adaptive.desktopHandCursor
+import com.qemusdl.app.ui.adaptive.desktopTextCursor
 import com.qemusdl.app.ui.library.VmLibraryViewModel
+import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
+
+private val editorJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+private val VmConfigSaver = Saver<VmConfig, String>(
+    save = { editorJson.encodeToString(it) },
+    restore = { raw -> runCatching { editorJson.decodeFromString<VmConfig>(raw) }.getOrElse { VmConfig(name = "New Virtual Machine") } }
+)
 
 @OptIn(
     ExperimentalMaterial3Api::class,
@@ -98,7 +120,8 @@ fun VmEditorScreen(
     viewModel: VmLibraryViewModel,
     onBack: () -> Unit,
     onOpenIsoDownloader: (String?) -> Unit = {},
-    onSavedAndBoot: (VmConfig) -> Unit
+    onSavedAndBoot: (VmConfig) -> Unit,
+    showBackButton: Boolean = true
 ) {
     val context = LocalContext.current
     val allVms by viewModel.vms.collectAsState()
@@ -106,13 +129,19 @@ fun VmEditorScreen(
     val localDisks by viewModel.disks.collectAsState()
     val downloadedIsos by viewModel.downloadedIsos.collectAsState()
 
-    var config by remember(existing) {
+    var config by rememberSaveable(vmId, existing?.id, stateSaver = VmConfigSaver) {
         mutableStateOf(existing ?: VmConfig(name = "New Virtual Machine"))
     }
-    var showCreateDiskDialog by remember { mutableStateOf(false) }
+    var showCreateDiskDialog by rememberSaveable { mutableStateOf(false) }
 
     val usbPassthroughManager = remember(context) { UsbPassthroughManager(context) }
     var connectedUsbDevices by remember { mutableStateOf(usbPassthroughManager.getConnectedDevices()) }
+    val gridState = rememberLazyGridState()
+
+    fun saveAndClose() {
+        viewModel.saveVm(config.copy(isSetupComplete = true))
+        onBack()
+    }
 
     val isoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -145,38 +174,58 @@ fun VmEditorScreen(
     }
 
     Scaffold(
+        modifier = Modifier.onPreviewKeyEvent { keyEvent ->
+            if (keyEvent.type == KeyEventType.KeyDown &&
+                keyEvent.nativeKeyEvent.repeatCount == 0 &&
+                keyEvent.isCtrlPressed &&
+                keyEvent.key == Key.S
+            ) {
+                saveAndClose()
+                true
+            } else {
+                false
+            }
+        },
         topBar = {
             TopAppBar(
                 title = {
                     Text(if (existing == null) "Create ${config.architecture.badgeText} VM" else "Configure VM")
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                    if (showBackButton) {
+                        AppTooltipBox(tooltip = "Back") {
+                            IconButton(onClick = onBack, modifier = Modifier.desktopHandCursor()) {
+                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                            }
+                        }
                     }
                 },
                 actions = {
-                    FilledTonalButton(
-                        onClick = {
-                            viewModel.saveVm(config.copy(isSetupComplete = true))
-                            onBack()
-                        },
-                        modifier = Modifier.padding(end = 12.dp)
-                    ) {
-                        Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Save")
+                    AppTooltipBox(tooltip = "Save configuration (Ctrl+S)") {
+                        FilledTonalButton(
+                            onClick = { saveAndClose() },
+                            modifier = Modifier
+                                .padding(end = 12.dp)
+                                .desktopHandCursor()
+                        ) {
+                            Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Save")
+                        }
                     }
                 }
             )
         }
     ) { innerPadding ->
-        LazyColumn(
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Adaptive(minSize = 440.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
             contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // Identity, Architecture & OS Preset Card
             item {
@@ -679,11 +728,20 @@ fun VmEditorScreen(
             // Peripherals & CLI Preview
             item {
                 EditorSectionCard(title = "Peripherals & Extra Args", icon = Icons.Rounded.Terminal) {
+                    val isMacOs9 = config.architecture == GuestArchitecture.PPC && config.osPreset == OsPreset.MACOS_9
                     SwitchRow(
                         title = "USB Tablet Pointer (-device usb-tablet)",
-                        subtitle = "Enables accurate direct-touch pointer positioning in SDL2",
-                        checked = config.usbTabletEnabled,
-                        onCheckedChange = { config = config.copy(usbTabletEnabled = it) }
+                        subtitle = if (isMacOs9) {
+                            "Disabled for Mac OS 9 — uses native OHCI usb-mouse / ADB mouse instead"
+                        } else {
+                            "Enables accurate direct-touch pointer positioning in SDL2"
+                        },
+                        checked = if (isMacOs9) false else config.usbTabletEnabled,
+                        onCheckedChange = {
+                            if (!isMacOs9) {
+                                config = config.copy(usbTabletEnabled = it)
+                            }
+                        }
                     )
                     SwitchRow(
                         title = "User Networking (SLIRP NAT + DNS)",
@@ -738,18 +796,20 @@ fun VmEditorScreen(
                         shape = MaterialTheme.shapes.medium,
                         color = MaterialTheme.colorScheme.surfaceContainerHighest
                     ) {
-                        Text(
-                            text = QemuCommandBuilder.formatCommandLine(config),
-                            modifier = Modifier.padding(14.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace
-                        )
+                        SelectionContainer(modifier = Modifier.desktopTextCursor()) {
+                            Text(
+                                text = QemuCommandBuilder.formatCommandLine(config),
+                                modifier = Modifier.padding(14.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
                     }
                 }
             }
 
             // Bottom Save & Boot CTA
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -757,11 +817,8 @@ fun VmEditorScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     OutlinedButton(
-                        onClick = {
-                            viewModel.saveVm(config.copy(isSetupComplete = true))
-                            onBack()
-                        },
-                        modifier = Modifier.weight(1f)
+                        onClick = { saveAndClose() },
+                        modifier = Modifier.weight(1f).desktopHandCursor()
                     ) {
                         Text("Save Only")
                     }
@@ -771,7 +828,7 @@ fun VmEditorScreen(
                             viewModel.saveVm(saved)
                             onSavedAndBoot(saved)
                         },
-                        modifier = Modifier.weight(1.3f)
+                        modifier = Modifier.weight(1.3f).desktopHandCursor()
                     ) {
                         Icon(Icons.Rounded.PlayArrow, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
@@ -901,9 +958,10 @@ fun CreateDiskDialog(
     onDismiss: () -> Unit,
     onCreate: (name: String, sizeMb: Int, format: DiskFormat) -> Unit
 ) {
-    var name by remember { mutableStateOf("alpine_root") }
-    var sizeMb by remember { mutableIntStateOf(4096) }
-    var format by remember { mutableStateOf(DiskFormat.QCOW2) }
+    var name by rememberSaveable { mutableStateOf("alpine_root") }
+    var sizeMb by rememberSaveable { mutableIntStateOf(4096) }
+    var formatName by rememberSaveable { mutableStateOf(DiskFormat.QCOW2.name) }
+    val format = DiskFormat.entries.firstOrNull { it.name == formatName } ?: DiskFormat.QCOW2
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -928,7 +986,7 @@ fun CreateDiskDialog(
                     DiskFormat.entries.forEach { item ->
                         FilterChip(
                             selected = format == item,
-                            onClick = { format = item },
+                            onClick = { formatName = item.name },
                             label = { Text(item.label) }
                         )
                     }
@@ -1084,7 +1142,8 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         sdlGlAcceleration = false,
         venus3dEnabled = false,
         usbXhciEnabled = false,
-        usbTabletEnabled = true,
+        usbTabletEnabled = false,
+        mouseEmulationMode = MouseEmulationMode.TRACKPAD_RELATIVE,
         audioEnabled = true,
         recommendedIsoId = "macos-921-ppc"
     )
@@ -1102,7 +1161,8 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         sdlGlAcceleration = false,
         venus3dEnabled = false,
         usbXhciEnabled = false,
-        usbTabletEnabled = true,
+        usbTabletEnabled = false,
+        mouseEmulationMode = MouseEmulationMode.TRACKPAD_RELATIVE,
         audioEnabled = true,
         recommendedIsoId = null
     )
@@ -1117,6 +1177,7 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         diskInterface = if (current.diskInterface == DiskInterface.SATA) DiskInterface.IDE else current.diskInterface,
         venus3dEnabled = false,
         usbXhciEnabled = false,
+        usbTabletEnabled = false,
         recommendedIsoId = null
     )
 }

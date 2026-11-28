@@ -5,6 +5,11 @@
         android:glEsVersion="0x00030000"
         android:required="true" />
 
+    <!-- Allow installation on non-touchscreen ARM laptops / GooglebookOS / desktop devices -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
     <!-- USB Host API support for direct USB OTG passthrough into QEMU via UsbManager & libusb -->
     <uses-feature
         android:name="android.hardware.usb.host"
@@ -12,12 +17,17 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
         android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:resizeableActivity="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.QemuSDL"
@@ -33,7 +43,28 @@
             </intent-filter>
         </activity>
 
-        <!-- True in-process QEMU x86_64 + SDL2 Activity running in an isolated VM process -->
+        <!-- Exported VM launcher trampoline for home screen shortcuts and external Intents (validates against saved VMs only) -->
+        <activity
+            android:name=".ui.viewport.VmLauncherActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="com.qemusdl.app.action.LAUNCH_VM" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="launch"
+                    android:scheme="qemusdl" />
+            </intent-filter>
+        </activity>
+
+        <!-- True in-process QEMU + SDL2 Activity running in an isolated VM process -->
         <activity
             android:name=".ui.viewport.QemuSdlActivity"
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
@@ -42,10 +73,9 @@
             android:preferMinimalPostProcessing="true"
             android:process=":qemu_vm"
             android:resizeableActivity="true"
-            android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.QemuSDL" />
 
-        <!-- Fallback OpenGL ES 3.0 SDL2-compatible interactive viewport (when ABI lacks libqemu-system-x86_64.so) -->
+        <!-- Fallback OpenGL ES 3.0 SDL2-compatible interactive viewport (when ABI lacks native QEMU .so) -->
         <activity
             android:name=".ui.viewport.VmViewportActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode"
@@ -53,8 +83,13 @@
             android:hardwareAccelerated="true"
             android:launchMode="singleTask"
             android:resizeableActivity="true"
-            android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.QemuSDL" />
+
+        <!-- Keeps ISO downloads alive with CPU/Wi-Fi locks when the device screen sleeps -->
+        <service
+            android:name=".qemu.IsoDownloadForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 

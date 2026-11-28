@@ -58,8 +58,130 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     // Normalized guest cursor position in [0.001f, 0.999f] within the active SDL logical viewport
     private float mCursorNormX = 0.5f;
     private float mCursorNormY = 0.5f;
+    // True when guest uses a relative mouse (e.g. Mac OS 9 usb-mouse/adb-mouse or FreeDOS PS/2) without usb-tablet
+    private boolean mRelativeGuestPointer = false;
+    private float mRelAccumX = 0f;
+    private float mRelAccumY = 0f;
+    // True when a physical mouse/trackpad is actively driving the cursor (hides redundant virtual touch cursor)
+    private boolean mHardwareMouseActive = false;
+    private boolean mPointerCaptured = false;
     private boolean mSyncTickerActive = false;
     private boolean mInitialMouseSeeded = false;
+
+    public void setRelativeGuestPointer(boolean relativeGuest) {
+        mRelativeGuestPointer = relativeGuest;
+        mRelAccumX = 0f;
+        mRelAccumY = 0f;
+        notifyCursorChanged();
+    }
+
+    public boolean isRelativeGuestPointer() {
+        return mRelativeGuestPointer;
+    }
+
+    public interface PointerCaptureListener {
+        void onPointerCaptureChanged(boolean captured);
+    }
+
+    private PointerCaptureListener mPointerCaptureListener;
+
+    public void setPointerCaptureListener(PointerCaptureListener listener) {
+        mPointerCaptureListener = listener;
+        if (listener != null) {
+            listener.onPointerCaptureChanged(mPointerCaptured);
+        }
+    }
+
+    public boolean isPointerCaptureActive() {
+        return mPointerCaptured;
+    }
+
+    public void setPointerCapture(boolean capture) {
+        if (Build.VERSION.SDK_INT < 26) {
+            return;
+        }
+        if (capture) {
+            if (!hasFocus()) {
+                requestFocus();
+            }
+            requestPointerCapture();
+        } else {
+            releasePointerCapture();
+        }
+    }
+
+    public void togglePointerCapture() {
+        setPointerCapture(!mPointerCaptured);
+    }
+
+    @Override
+    public void onPointerCaptureChange(boolean hasCapture) {
+        super.onPointerCaptureChange(hasCapture);
+        mPointerCaptured = hasCapture;
+        if (hasCapture) {
+            mHardwareMouseActive = true;
+            mRelAccumX = 0f;
+            mRelAccumY = 0f;
+        }
+        notifyCursorChanged();
+        if (mPointerCaptureListener != null) {
+            mPointerCaptureListener.onPointerCaptureChanged(hasCapture);
+        }
+    }
+
+    @Override
+    public boolean onCapturedPointerEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        int buttonState = event.getButtonState();
+        switch (action) {
+            case MotionEvent.ACTION_MOVE:
+            case MotionEvent.ACTION_HOVER_MOVE: {
+                float dx = event.getX();
+                float dy = event.getY();
+                if (dx != 0f || dy != 0f) {
+                    SDLActivity.onNativeMouse(buttonState, MotionEvent.ACTION_MOVE, dx, dy, true);
+                }
+                return true;
+            }
+            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_BUTTON_PRESS:
+                SDLActivity.onNativeMouse(buttonState, MotionEvent.ACTION_DOWN, 0f, 0f, true);
+                return true;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_BUTTON_RELEASE:
+            case MotionEvent.ACTION_CANCEL:
+                SDLActivity.onNativeMouse(buttonState, MotionEvent.ACTION_UP, 0f, 0f, true);
+                return true;
+            case MotionEvent.ACTION_SCROLL: {
+                float sx = event.getAxisValue(MotionEvent.AXIS_HSCROLL, 0);
+                float sy = event.getAxisValue(MotionEvent.AXIS_VSCROLL, 0);
+                SDLActivity.onNativeMouse(0, MotionEvent.ACTION_SCROLL, sx, sy, false);
+                return true;
+            }
+            default:
+                return super.onCapturedPointerEvent(event);
+        }
+    }
+
+    /**
+     * Maps raw physical mouse coordinates in SDLSurface space into the clamped inner SDL2 viewport
+     * and suppresses the virtual touch cursor overlay so the host mouse cursor isn't duplicated.
+     */
+    float[] mapPhysicalMouseToViewport(float rawX, float rawY) {
+        if (!mHardwareMouseActive) {
+            mHardwareMouseActive = true;
+            notifyCursorChanged();
+        }
+        float[] vp = new float[4];
+        computeSdlInnerViewport(vp);
+        float vpX = vp[0];
+        float vpY = vp[1];
+        float vpW = Math.max(1f, vp[2]);
+        float vpH = Math.max(1f, vp[3]);
+        mCursorNormX = clampNorm((rawX - vpX) / vpW);
+        mCursorNormY = clampNorm((rawY - vpY) / vpH);
+        return new float[] { vpX + mCursorNormX * vpW, vpY + mCursorNormY * vpH };
+    }
 
     public interface CursorListener {
         void onCursorUpdated(float screenX, float screenY, boolean visible, boolean leftDown, boolean rightDown);
@@ -118,15 +240,13 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             float centerY = surfH * 0.5f;
             float screenX = centerX + (sdlX - centerX) * getScaleX();
             float screenY = centerY + (sdlY - centerY) * getScaleY();
-            mCursorListener.onCursorUpdated(screenX, screenY, true, mLeftButtonDown, mRightButtonDown);
+            // Hide the virtual touch cursor overlay for relative-mouse guests or active hardware mice/pointer capture
+            boolean showVirtualCursor = !mRelativeGuestPointer && !mHardwareMouseActive && !mPointerCaptured;
+            mCursorListener.onCursorUpdated(screenX, screenY, showVirtualCursor, mLeftButtonDown, mRightButtonDown);
         }
     }
 
     public void performVirtualClick(boolean rightClick) {
-        float[] vp = new float[4];
-        computeSdlInnerViewport(vp);
-        final float clickX = vp[0] + mCursorNormX * vp[2];
-        final float clickY = vp[1] + mCursorNormY * vp[3];
         final int btn = rightClick ? MotionEvent.BUTTON_SECONDARY : MotionEvent.BUTTON_PRIMARY;
         if (rightClick) {
             mRightButtonDown = true;
@@ -134,6 +254,23 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             mLeftButtonDown = true;
         }
         notifyCursorChanged();
+        if (mRelativeGuestPointer) {
+            SDLActivity.onNativeMouse(btn, MotionEvent.ACTION_DOWN, 0f, 0f, true);
+            postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    mLeftButtonDown = false;
+                    mRightButtonDown = false;
+                    notifyCursorChanged();
+                    SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, 0f, 0f, true);
+                }
+            }, 65L);
+            return;
+        }
+        float[] vp = new float[4];
+        computeSdlInnerViewport(vp);
+        final float clickX = vp[0] + mCursorNormX * vp[2];
+        final float clickY = vp[1] + mCursorNormY * vp[3];
         SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, clickX, clickY, false);
         SDLActivity.onNativeMouse(btn, MotionEvent.ACTION_DOWN, clickX, clickY, false);
         postDelayed(new Runnable() {
@@ -501,38 +638,55 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         float vpW = Math.max(1f, vp[2]);
         float vpH = Math.max(1f, vp[3]);
 
-        // 12290 = Samsung DeX mode desktop mouse
-        // 12290 = 0x3002 = 0x2002 | 0x1002 = SOURCE_MOUSE | SOURCE_TOUCHSCREEN
-        // 0x2   = SOURCE_CLASS_POINTER
-        if (event.getSource() == InputDevice.SOURCE_MOUSE || event.getSource() == (InputDevice.SOURCE_MOUSE | InputDevice.SOURCE_TOUCHSCREEN)) {
-            int mouseButton = (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) ? 0 : MotionEvent.BUTTON_PRIMARY;
-            try {
-                Object object = event.getClass().getMethod("getButtonState").invoke(event);
-                if (object != null) {
-                    mouseButton = (Integer) object;
-                }
-            } catch(Exception ignored) {
-            }
-
-            // We need to check if we're in relative mouse mode and get the axis offset rather than the x/y values
-            // if we are.  We'll leverage our existing mouse motion listener
-            SDLGenericMotionListener_API12 motionListener = SDLActivity.getMotionListener();
-            boolean rel = motionListener.inRelativeMode();
-            x = motionListener.getEventX(event);
-            y = motionListener.getEventY(event);
-            if (!rel) {
-                mCursorNormX = clampNorm((x - vpX) / vpW);
-                mCursorNormY = clampNorm((y - vpY) / vpH);
-                x = vpX + mCursorNormX * vpW;
-                y = vpY + mCursorNormY * vpH;
+        // Handle physical mouse / trackpad events across Android Desktop, GooglebookOS, ChromeOS, and DeX
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE) || event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)) {
+            if (!mHardwareMouseActive) {
+                mHardwareMouseActive = true;
                 notifyCursorChanged();
             }
 
-            SDLActivity.onNativeMouse(mouseButton, action, x, y, rel);
+            // On relative-pointer guests (e.g. Mac OS 9), clicking with a physical mouse automatically
+            // enters Android Pointer Capture so deltas are unbounded and the host cursor doesn't duplicate.
+            if (mRelativeGuestPointer && Build.VERSION.SDK_INT >= 26 && !mPointerCaptured &&
+                    (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_BUTTON_PRESS)) {
+                setPointerCapture(true);
+            }
+
+            int mouseButton = event.getButtonState();
+            if (mouseButton == 0 && action == MotionEvent.ACTION_DOWN) {
+                mouseButton = MotionEvent.BUTTON_PRIMARY;
+            }
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                mouseButton = event.getButtonState();
+            }
+
+            SDLGenericMotionListener_API12 motionListener = SDLActivity.getMotionListener();
+            boolean rel = motionListener.inRelativeMode() || event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE);
+            x = motionListener.getEventX(event);
+            y = motionListener.getEventY(event);
+            if (!rel) {
+                float[] mapped = mapPhysicalMouseToViewport(x, y);
+                x = mapped[0];
+                y = mapped[1];
+            }
+
+            int sdlAction = action;
+            if (action == MotionEvent.ACTION_BUTTON_PRESS) {
+                sdlAction = MotionEvent.ACTION_DOWN;
+            } else if (action == MotionEvent.ACTION_BUTTON_RELEASE) {
+                sdlAction = MotionEvent.ACTION_UP;
+            }
+            SDLActivity.onNativeMouse(mouseButton, sdlAction, x, y, rel);
             return true;
         }
 
-        if (mMouseEmulationMode == 0) {
+        // Touch interaction restores the virtual touch cursor overlay (for absolute guests)
+        if (mHardwareMouseActive) {
+            mHardwareMouseActive = false;
+            notifyCursorChanged();
+        }
+
+        if (mMouseEmulationMode == 0 || (mRelativeGuestPointer && mMouseEmulationMode == 2)) {
             // TRACKPAD_RELATIVE mode: relative pointer movement, 1-finger tap = Left Click, 2-finger tap = Right Click, 2-finger drag = Scroll
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
@@ -543,6 +697,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
                     mDownTimeMs = event.getEventTime();
                     mMaxPointers = 1;
                     mMovedBeyondSlop = false;
+                    mRelAccumX = 0f;
+                    mRelAccumY = 0f;
                     notifyCursorChanged();
                     break;
                 case MotionEvent.ACTION_POINTER_DOWN:
@@ -558,6 +714,17 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
                     }
                     if (pointerCount >= 2) {
                         SDLActivity.onNativeMouse(0, MotionEvent.ACTION_SCROLL, rawDx * 0.05f, -rawDy * 0.05f, false);
+                    } else if (mRelativeGuestPointer) {
+                        // Send true unbounded relative deltas so usb-mouse / adb-mouse / PS/2 guests never clamp at screen edges
+                        mRelAccumX += rawDx;
+                        mRelAccumY += rawDy;
+                        int intDx = (int) mRelAccumX;
+                        int intDy = (int) mRelAccumY;
+                        mRelAccumX -= intDx;
+                        mRelAccumY -= intDy;
+                        if (intDx != 0 || intDy != 0) {
+                            SDLActivity.onNativeMouse(0, MotionEvent.ACTION_HOVER_MOVE, intDx, intDy, true);
+                        }
                     } else {
                         mCursorNormX = clampNorm(mCursorNormX + (rawDx / vpW));
                         mCursorNormY = clampNorm(mCursorNormY + (rawDy / vpH));
@@ -611,6 +778,44 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
                     }
                     break;
                 }
+                default:
+                    break;
+            }
+            return true;
+        } else if (mRelativeGuestPointer) {
+            // DIRECT_TOUCH mode (1) on relative-mouse guests: hold-and-drag with left button (great for Classic Mac menus & windows)
+            switch (action) {
+                case MotionEvent.ACTION_DOWN:
+                    mLastTouchX = event.getX(0);
+                    mLastTouchY = event.getY(0);
+                    mRelAccumX = 0f;
+                    mRelAccumY = 0f;
+                    mLeftButtonDown = true;
+                    notifyCursorChanged();
+                    SDLActivity.onNativeMouse(MotionEvent.BUTTON_PRIMARY, MotionEvent.ACTION_DOWN, 0f, 0f, true);
+                    break;
+                case MotionEvent.ACTION_MOVE: {
+                    float rawDx = (event.getX(0) - mLastTouchX) * mTrackpadSensitivity;
+                    float rawDy = (event.getY(0) - mLastTouchY) * mTrackpadSensitivity;
+                    mLastTouchX = event.getX(0);
+                    mLastTouchY = event.getY(0);
+                    mRelAccumX += rawDx;
+                    mRelAccumY += rawDy;
+                    int intDx = (int) mRelAccumX;
+                    int intDy = (int) mRelAccumY;
+                    mRelAccumX -= intDx;
+                    mRelAccumY -= intDy;
+                    if (intDx != 0 || intDy != 0) {
+                        SDLActivity.onNativeMouse(MotionEvent.BUTTON_PRIMARY, MotionEvent.ACTION_MOVE, intDx, intDy, true);
+                    }
+                    break;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    mLeftButtonDown = false;
+                    notifyCursorChanged();
+                    SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, 0f, 0f, true);
+                    break;
                 default:
                     break;
             }
@@ -708,46 +913,5 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
 
 
         }
-    }
-
-    // Captured pointer events for API 26.
-    public boolean onCapturedPointerEvent(MotionEvent event)
-    {
-        int action = event.getActionMasked();
-
-        float x, y;
-        switch (action) {
-            case MotionEvent.ACTION_SCROLL:
-                x = event.getAxisValue(MotionEvent.AXIS_HSCROLL, 0);
-                y = event.getAxisValue(MotionEvent.AXIS_VSCROLL, 0);
-                SDLActivity.onNativeMouse(0, action, x, y, false);
-                return true;
-
-            case MotionEvent.ACTION_HOVER_MOVE:
-            case MotionEvent.ACTION_MOVE:
-                x = event.getX(0);
-                y = event.getY(0);
-                SDLActivity.onNativeMouse(0, action, x, y, true);
-                return true;
-
-            case MotionEvent.ACTION_BUTTON_PRESS:
-            case MotionEvent.ACTION_BUTTON_RELEASE:
-
-                // Change our action value to what SDL's code expects.
-                if (action == MotionEvent.ACTION_BUTTON_PRESS) {
-                    action = MotionEvent.ACTION_DOWN;
-                } else { /* MotionEvent.ACTION_BUTTON_RELEASE */
-                    action = MotionEvent.ACTION_UP;
-                }
-
-                x = event.getX(0);
-                y = event.getY(0);
-                int button = event.getButtonState();
-
-                SDLActivity.onNativeMouse(button, action, x, y, true);
-                return true;
-        }
-
-        return false;
     }
 }

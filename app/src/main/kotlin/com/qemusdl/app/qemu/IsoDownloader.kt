@@ -1,20 +1,30 @@
 package com.qemusdl.app.qemu
 
 import android.content.Context
+import android.os.PowerManager
 import com.qemusdl.app.data.DownloadedIsoInfo
 import com.qemusdl.app.data.GuestArchitecture
 import com.qemusdl.app.data.OsPreset
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipInputStream
 
 enum class IsoResolveStrategy {
@@ -39,6 +49,9 @@ data class IsoCatalogEntry(
 )
 
 sealed interface IsoDownloadState {
+    val isActiveDownload: Boolean
+        get() = this is Resolving || this is Downloading || this is Extracting
+
     data object Idle : IsoDownloadState
     data class Resolving(val status: String = "Finding latest mirror...") : IsoDownloadState
     data class Downloading(
@@ -247,7 +260,14 @@ object IsoCatalog {
 
 class IsoDownloader(context: Context) {
 
-    private val isosDir: File = File(context.applicationContext.filesDir, "isos").apply { mkdirs() }
+    private val appContext: Context = context.applicationContext
+    private val isosDir: File = File(appContext.filesDir, "isos").apply { mkdirs() }
+    private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val activeTitles = ConcurrentHashMap<String, String>()
+    private val activeDownloadCount = AtomicInteger(0)
+    private val wakeLockGuard = Any()
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private val _states = MutableStateFlow<Map<String, IsoDownloadState>>(emptyMap())
     val states: StateFlow<Map<String, IsoDownloadState>> = _states.asStateFlow()
@@ -264,6 +284,9 @@ class IsoDownloader(context: Context) {
         return if (f.exists() && f.length() > 0L) f else null
     }
 
+    fun getDownloadTitle(id: String): String =
+        activeTitles[id] ?: IsoCatalog.findById(id)?.title ?: "OS Image Download"
+
     fun deleteLocalIso(path: String) {
         val file = File(path)
         if (file.exists() && file.parentFile?.canonicalPath == isosDir.canonicalPath) {
@@ -276,7 +299,75 @@ class IsoDownloader(context: Context) {
         _states.update { it - id }
     }
 
+    fun startCatalogDownload(
+        entry: IsoCatalogEntry,
+        onComplete: (File) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        if (activeJobs[entry.id]?.isActive == true) return
+        activeTitles[entry.id] = entry.title
+        updateState(entry.id, IsoDownloadState.Resolving())
+        IsoDownloadForegroundService.start(appContext)
+
+        val job = downloadScope.launch {
+            try {
+                val result = downloadCatalogEntry(entry)
+                withContext(Dispatchers.Main.immediate) {
+                    result.onSuccess(onComplete)
+                    result.onFailure { err -> onError(err.message ?: "Download failed") }
+                }
+            } finally {
+                activeJobs.remove(entry.id)
+                activeTitles.remove(entry.id)
+            }
+        }
+        activeJobs[entry.id] = job
+    }
+
+    fun startCustomDownload(
+        urlString: String,
+        preferredFileName: String? = null,
+        onComplete: (File) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        val id = CUSTOM_DOWNLOAD_ID
+        if (activeJobs[id]?.isActive == true) return
+        val displayTitle = preferredFileName?.takeIf { it.isNotBlank() }
+            ?: urlString.trim().substringAfterLast('/').substringBefore('?').ifBlank { "Custom ISO" }
+        activeTitles[id] = displayTitle
+        updateState(id, IsoDownloadState.Resolving("Connecting to server..."))
+        IsoDownloadForegroundService.start(appContext)
+
+        val job = downloadScope.launch {
+            try {
+                val result = downloadCustomUrl(urlString, preferredFileName)
+                withContext(Dispatchers.Main.immediate) {
+                    result.onSuccess(onComplete)
+                    result.onFailure { err -> onError(err.message ?: "Custom download failed") }
+                }
+            } finally {
+                activeJobs.remove(id)
+                activeTitles.remove(id)
+            }
+        }
+        activeJobs[id] = job
+    }
+
+    fun cancelDownload(id: String) {
+        activeJobs.remove(id)?.cancel()
+        activeTitles.remove(id)
+        updateState(id, IsoDownloadState.Idle)
+    }
+
+    fun cancelAllDownloads() {
+        val ids = activeJobs.keys.toList()
+        for (id in ids) {
+            cancelDownload(id)
+        }
+    }
+
     suspend fun downloadCatalogEntry(entry: IsoCatalogEntry): Result<File> = withContext(Dispatchers.IO) {
+        acquireWakeLock()
         try {
             updateState(entry.id, IsoDownloadState.Resolving())
             val resolvedUrl = resolveDownloadUrl(entry)
@@ -294,15 +385,18 @@ class IsoDownloader(context: Context) {
             updateState(entry.id, IsoDownloadState.Idle)
             throw ce
         } catch (t: Throwable) {
-            val msg = t.message?.take(160) ?: "Download failed"
+            val msg = t.message?.take(180) ?: "Download failed"
             updateState(entry.id, IsoDownloadState.Failed(msg))
             Result.failure(t)
+        } finally {
+            releaseWakeLock()
         }
     }
 
     suspend fun downloadCustomUrl(urlString: String, preferredFileName: String? = null): Result<File> =
         withContext(Dispatchers.IO) {
             val id = CUSTOM_DOWNLOAD_ID
+            acquireWakeLock()
             try {
                 val trimmed = urlString.trim()
                 require(trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
@@ -334,9 +428,11 @@ class IsoDownloader(context: Context) {
                 updateState(id, IsoDownloadState.Idle)
                 throw ce
             } catch (t: Throwable) {
-                val msg = t.message?.take(160) ?: "Custom download failed"
+                val msg = t.message?.take(180) ?: "Custom download failed"
                 updateState(id, IsoDownloadState.Failed(msg))
                 Result.failure(t)
+            } finally {
+                releaseWakeLock()
             }
         }
 
@@ -360,52 +456,135 @@ class IsoDownloader(context: Context) {
         extractIsoFromZip: Boolean
     ): File = withContext(Dispatchers.IO) {
         val tempFile = File(isosDir, "${destFile.name}.part")
-        if (tempFile.exists()) tempFile.delete()
+        val urlMetaFile = File(isosDir, "${destFile.name}.part.url")
 
-        val conn = openFollowingRedirects(urlString)
-        try {
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                error("Server returned HTTP $code")
+        // Only reuse an existing .part file if it came from the exact same URL
+        val savedUrl = if (urlMetaFile.exists()) runCatching { urlMetaFile.readText().trim() }.getOrNull() else null
+        if (tempFile.exists() && savedUrl != urlString) {
+            tempFile.delete()
+        }
+        runCatching { urlMetaFile.writeText(urlString) }
+
+        var attempt = 0
+        var lastTransientError: IOException? = null
+        var downloadComplete = false
+
+        while (!downloadComplete && attempt <= MAX_TRANSIENT_RETRIES) {
+            if (!isActive) {
+                tempFile.delete()
+                urlMetaFile.delete()
+                throw CancellationException("Download cancelled")
             }
-            val totalBytes = conn.contentLengthLong
-            var downloaded = 0L
-            var lastTickTime = System.currentTimeMillis()
-            var lastTickBytes = 0L
 
-            updateState(downloadId, IsoDownloadState.Downloading(0L, totalBytes, 0L))
+            val existingBytes = if (tempFile.exists()) tempFile.length() else 0L
+            if (existingBytes > 0L) {
+                updateState(downloadId, IsoDownloadState.Resolving("Resuming download..."))
+            }
 
-            conn.inputStream.use { input ->
-                tempFile.outputStream().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        if (!isActive) {
-                            throw CancellationException("Download cancelled")
+            var conn: HttpURLConnection? = null
+            try {
+                conn = openFollowingRedirects(urlString, rangeStart = existingBytes)
+                val code = conn.responseCode
+
+                if (code == 416) {
+                    val rangeTotal = parseContentRangeTotal(conn.getHeaderField("Content-Range"))
+                    if (rangeTotal > 0L && existingBytes == rangeTotal) {
+                        downloadComplete = true
+                        break
+                    }
+                    // Stale/oversized .part file; reset and restart cleanly from byte 0
+                    tempFile.delete()
+                    attempt++
+                    continue
+                }
+
+                if (code == 408 || code == 429 || code in 500..599) {
+                    throw IOException("Server returned HTTP $code")
+                }
+                if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL) {
+                    tempFile.delete()
+                    urlMetaFile.delete()
+                    error("Server returned HTTP $code")
+                }
+
+                val isResumed = code == HttpURLConnection.HTTP_PARTIAL && existingBytes > 0L
+                val startOffset = if (isResumed) existingBytes else 0L
+                val totalBytes = if (isResumed) {
+                    val parsedTotal = parseContentRangeTotal(conn.getHeaderField("Content-Range"))
+                    when {
+                        parsedTotal > 0L -> parsedTotal
+                        conn.contentLengthLong > 0L -> startOffset + conn.contentLengthLong
+                        else -> -1L
+                    }
+                } else {
+                    conn.contentLengthLong
+                }
+
+                var downloaded = startOffset
+                var lastTickTime = System.currentTimeMillis()
+                var lastTickBytes = downloaded
+
+                updateState(downloadId, IsoDownloadState.Downloading(downloaded, totalBytes, 0L))
+
+                conn.inputStream.use { input ->
+                    FileOutputStream(tempFile, isResumed).use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            if (!isActive) {
+                                throw CancellationException("Download cancelled")
+                            }
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            output.write(buffer, 0, read)
+                            downloaded += read
+
+                            val now = System.currentTimeMillis()
+                            if (now - lastTickTime >= 250L) {
+                                val dtMs = (now - lastTickTime).coerceAtLeast(1L)
+                                val speed = ((downloaded - lastTickBytes) * 1000L) / dtMs
+                                lastTickTime = now
+                                lastTickBytes = downloaded
+                                updateState(
+                                    downloadId,
+                                    IsoDownloadState.Downloading(downloaded, totalBytes, speed)
+                                )
+                            }
                         }
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-
-                        val now = System.currentTimeMillis()
-                        if (now - lastTickTime >= 250L) {
-                            val dtMs = (now - lastTickTime).coerceAtLeast(1L)
-                            val speed = ((downloaded - lastTickBytes) * 1000L) / dtMs
-                            lastTickTime = now
-                            lastTickBytes = downloaded
-                            updateState(
-                                downloadId,
-                                IsoDownloadState.Downloading(downloaded, totalBytes, speed)
-                            )
-                        }
+                        output.flush()
                     }
                 }
+
+                if (totalBytes > 0L && downloaded < totalBytes) {
+                    throw IOException("Connection interrupted at $downloaded / $totalBytes bytes")
+                }
+                downloadComplete = true
+            } catch (ce: CancellationException) {
+                tempFile.delete()
+                urlMetaFile.delete()
+                throw ce
+            } catch (ioe: IOException) {
+                // Keep tempFile + urlMetaFile so retry or manual restart resumes via HTTP Range
+                lastTransientError = ioe
+                attempt++
+                if (attempt <= MAX_TRANSIENT_RETRIES) {
+                    val backoffMs = RETRY_BACKOFF_MS[(attempt - 1).coerceAtMost(RETRY_BACKOFF_MS.lastIndex)]
+                    val sec = backoffMs / 1000L
+                    updateState(
+                        downloadId,
+                        IsoDownloadState.Resolving(
+                            "Connection interrupted — resuming in ${sec}s ($attempt/$MAX_TRANSIENT_RETRIES)..."
+                        )
+                    )
+                    delay(backoffMs)
+                }
+            } finally {
+                conn?.disconnect()
             }
-        } catch (t: Throwable) {
-            tempFile.delete()
-            throw t
-        } finally {
-            conn.disconnect()
+        }
+
+        if (!downloadComplete) {
+            val reason = lastTransientError?.message ?: "Network interrupted"
+            throw IOException("Paused (progress saved — tap Download to resume): $reason", lastTransientError)
         }
 
         if (extractIsoFromZip) {
@@ -419,6 +598,7 @@ class IsoDownloader(context: Context) {
                 tempFile.delete()
             }
         }
+        urlMetaFile.delete()
         destFile
     }
 
@@ -456,14 +636,18 @@ class IsoDownloader(context: Context) {
         }
     }
 
-    private fun openFollowingRedirects(urlString: String): HttpURLConnection {
+    private fun openFollowingRedirects(urlString: String, rangeStart: Long = 0L): HttpURLConnection {
         var currentUrl = urlString
         repeat(6) {
             val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 20_000
-                readTimeout = 30_000
+                connectTimeout = 25_000
+                readTimeout = 45_000
                 instanceFollowRedirects = false
-                setRequestProperty("User-Agent", "QemuSDL-Android/1.0")
+                setRequestProperty("User-Agent", "QemuSDL-Android/1.1")
+                setRequestProperty("Accept-Encoding", "identity")
+                if (rangeStart > 0L) {
+                    setRequestProperty("Range", "bytes=$rangeStart-")
+                }
             }
             val code = conn.responseCode
             if (code in listOf(301, 302, 303, 307, 308)) {
@@ -476,6 +660,38 @@ class IsoDownloader(context: Context) {
             }
         }
         error("Too many HTTP redirects")
+    }
+
+    private fun acquireWakeLock() {
+        val count = activeDownloadCount.incrementAndGet()
+        if (count == 1) {
+            synchronized(wakeLockGuard) {
+                runCatching {
+                    val pm = appContext.getSystemService(PowerManager::class.java)
+                    if (wakeLock == null) {
+                        wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)?.apply {
+                            setReferenceCounted(false)
+                        }
+                    }
+                    if (wakeLock?.isHeld != true) {
+                        wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        val remaining = activeDownloadCount.decrementAndGet().coerceAtLeast(0)
+        if (remaining == 0) {
+            synchronized(wakeLockGuard) {
+                runCatching {
+                    if (wakeLock?.isHeld == true) {
+                        wakeLock?.release()
+                    }
+                }
+            }
+        }
     }
 
     private fun updateState(id: String, state: IsoDownloadState) {
@@ -496,6 +712,18 @@ class IsoDownloader(context: Context) {
 
     companion object {
         const val CUSTOM_DOWNLOAD_ID = "custom_url_download"
+        private const val MAX_TRANSIENT_RETRIES = 6
+        private val RETRY_BACKOFF_MS = longArrayOf(2_000L, 4_000L, 8_000L, 15_000L, 20_000L, 30_000L)
+        private const val WAKE_LOCK_TAG = "QemuSDL:IsoDownloaderCpuLock"
+        private const val WAKE_LOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000L
+
+        internal fun parseContentRangeTotal(contentRangeHeader: String?): Long {
+            if (contentRangeHeader.isNullOrBlank()) return -1L
+            val slashIdx = contentRangeHeader.lastIndexOf('/')
+            if (slashIdx == -1 || slashIdx == contentRangeHeader.lastIndex) return -1L
+            val totalStr = contentRangeHeader.substring(slashIdx + 1).trim()
+            return totalStr.toLongOrNull() ?: -1L
+        }
 
         @Volatile
         private var instance: IsoDownloader? = null
