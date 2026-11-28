@@ -30,12 +30,19 @@ using QemuMainLoopFn = int (*)(void);
 using QemuCleanupFn = void (*)(void);
 using SdlMainFn = int (*)(int argc, char** argv);
 
+enum class QemuTargetArch {
+    X86_64,
+    AARCH64,
+    PPC
+};
+
 struct LoadedNativeRuntime {
     void* sdlHandle = nullptr;
     void* qemuHandle = nullptr;
     bool sdlLoaded = false;
     bool qemuLoaded = false;
     bool qemuAarch64Loaded = false;
+    bool qemuPpcLoaded = false;
     bool hasQemuInit = false;
     bool hasSdlMain = false;
     bool hasLibusb = false;
@@ -43,6 +50,7 @@ struct LoadedNativeRuntime {
     std::string sdlPath;
     std::string qemuPath;
     std::string qemuAarch64Path;
+    std::string qemuPpcPath;
     std::string detail;
 
     void close() {
@@ -57,6 +65,7 @@ struct LoadedNativeRuntime {
         sdlLoaded = false;
         qemuLoaded = false;
         qemuAarch64Loaded = false;
+        qemuPpcLoaded = false;
         hasQemuInit = false;
         hasSdlMain = false;
     }
@@ -139,16 +148,19 @@ LoadedNativeRuntime probeLibrariesMetadataOnly(const std::string& nativeLibDir, 
     std::vector<std::string> sdlCandidates;
     std::vector<std::string> qemuX86Candidates;
     std::vector<std::string> qemuArm64Candidates;
+    std::vector<std::string> qemuPpcCandidates;
 
     if (!nativeLibDir.empty()) {
         sdlCandidates.push_back(nativeLibDir + "/libSDL2.so");
         qemuX86Candidates.push_back(nativeLibDir + "/libqemu-system-x86_64.so");
         qemuArm64Candidates.push_back(nativeLibDir + "/libqemu-system-aarch64.so");
+        qemuPpcCandidates.push_back(nativeLibDir + "/libqemu-system-ppc.so");
     }
     if (!customLibDir.empty()) {
         sdlCandidates.push_back(customLibDir + "/libSDL2.so");
         qemuX86Candidates.push_back(customLibDir + "/libqemu-system-x86_64.so");
         qemuArm64Candidates.push_back(customLibDir + "/libqemu-system-aarch64.so");
+        qemuPpcCandidates.push_back(customLibDir + "/libqemu-system-ppc.so");
     }
 
     rt.sdlPath = findElfLib(sdlCandidates);
@@ -160,8 +172,11 @@ LoadedNativeRuntime probeLibrariesMetadataOnly(const std::string& nativeLibDir, 
     rt.qemuAarch64Path = findElfLib(qemuArm64Candidates);
     rt.qemuAarch64Loaded = !rt.qemuAarch64Path.empty();
 
-    rt.hasQemuInit = rt.qemuLoaded || rt.qemuAarch64Loaded;
-    rt.hasSdlMain = rt.qemuLoaded || rt.qemuAarch64Loaded;
+    rt.qemuPpcPath = findElfLib(qemuPpcCandidates);
+    rt.qemuPpcLoaded = !rt.qemuPpcPath.empty();
+
+    rt.hasQemuInit = rt.qemuLoaded || rt.qemuAarch64Loaded || rt.qemuPpcLoaded;
+    rt.hasSdlMain = rt.qemuLoaded || rt.qemuAarch64Loaded || rt.qemuPpcLoaded;
 
     std::vector<std::string> libusbCandidates;
     if (!nativeLibDir.empty()) {
@@ -174,14 +189,21 @@ LoadedNativeRuntime probeLibrariesMetadataOnly(const std::string& nativeLibDir, 
     rt.hasLibusb = !libusbPath.empty();
     rt.hasLibusbWrap = rt.hasLibusb;
 
-    if (rt.sdlLoaded && rt.qemuLoaded && rt.qemuAarch64Loaded) {
-        rt.detail = "Native libSDL2.so + libqemu-system-x86_64.so + libqemu-system-aarch64.so ready for in-process SDL2 boot.";
-    } else if (rt.sdlLoaded && rt.qemuLoaded) {
-        rt.detail = "Native libSDL2.so + libqemu-system-x86_64.so ready for in-process SDL2 boot.";
-    } else if (rt.sdlLoaded && rt.qemuAarch64Loaded) {
-        rt.detail = "Native libSDL2.so + libqemu-system-aarch64.so ready for in-process SDL2 boot.";
+    std::vector<std::string> readyArchLibs;
+    if (rt.qemuLoaded) readyArchLibs.emplace_back("libqemu-system-x86_64.so");
+    if (rt.qemuAarch64Loaded) readyArchLibs.emplace_back("libqemu-system-aarch64.so");
+    if (rt.qemuPpcLoaded) readyArchLibs.emplace_back("libqemu-system-ppc.so");
+
+    if (rt.sdlLoaded && !readyArchLibs.empty()) {
+        std::ostringstream detailSs;
+        detailSs << "Native libSDL2.so";
+        for (const auto& lib : readyArchLibs) {
+            detailSs << " + " << lib;
+        }
+        detailSs << " ready for in-process SDL2 boot.";
+        rt.detail = detailSs.str();
     } else if (rt.sdlLoaded) {
-        rt.detail = "libSDL2.so found, awaiting libqemu-system-x86_64.so / libqemu-system-aarch64.so (GLES3 viewport fallback active).";
+        rt.detail = "libSDL2.so found, awaiting libqemu-system-*.so (GLES3 viewport fallback active).";
     } else {
         rt.detail = "GLES3 SDL2-compatible viewport ready. Add libSDL2.so + libqemu-system-*.so to boot guest OSes.";
     }
@@ -195,16 +217,27 @@ LoadedNativeRuntime probeLibraries(const std::string& nativeLibDir, const std::s
 LoadedNativeRuntime loadRuntimeForTarget(
     const std::string& nativeLibDir,
     const std::string& customLibDir,
-    bool isAarch64Target
+    QemuTargetArch targetArch
 ) {
     // Dynamically dlopen ONLY the target architecture's QEMU shared object
-    // (libqemu-system-aarch64.so vs libqemu-system-x86_64.so) with RTLD_LOCAL
-    // so global QEMU symbols never collide across architectures.
+    // (x86_64 vs aarch64 vs ppc) with RTLD_LOCAL so global QEMU symbols never collide.
     LoadedNativeRuntime rt = probeLibrariesMetadataOnly(nativeLibDir, customLibDir);
     if (!rt.sdlPath.empty()) {
         rt.sdlHandle = dlopen(rt.sdlPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
     }
-    const std::string& targetQemuSo = isAarch64Target ? rt.qemuAarch64Path : rt.qemuPath;
+    std::string targetQemuSo;
+    switch (targetArch) {
+        case QemuTargetArch::AARCH64:
+            targetQemuSo = rt.qemuAarch64Path;
+            break;
+        case QemuTargetArch::PPC:
+            targetQemuSo = rt.qemuPpcPath;
+            break;
+        case QemuTargetArch::X86_64:
+        default:
+            targetQemuSo = rt.qemuPath;
+            break;
+    }
     if (!targetQemuSo.empty()) {
         rt.qemuHandle = dlopen(targetQemuSo.c_str(), RTLD_NOW | RTLD_LOCAL);
         if (rt.qemuHandle) {
@@ -252,12 +285,14 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeProbeRuntime(
        << "\"sdl2Loaded\":" << (rt.sdlLoaded ? "true" : "false") << ","
        << "\"qemuLoaded\":" << (rt.qemuLoaded ? "true" : "false") << ","
        << "\"qemuAarch64Loaded\":" << (rt.qemuAarch64Loaded ? "true" : "false") << ","
+       << "\"qemuPpcLoaded\":" << (rt.qemuPpcLoaded ? "true" : "false") << ","
        << "\"hasQemuEntry\":" << ((rt.hasQemuInit || rt.hasSdlMain) ? "true" : "false") << ","
        << "\"hasLibusb\":" << (rt.hasLibusb ? "true" : "false") << ","
        << "\"hasLibusbWrap\":" << (rt.hasLibusbWrap ? "true" : "false") << ","
        << "\"sdl2Path\":\"" << escapeJson(rt.sdlPath) << "\","
        << "\"qemuPath\":\"" << escapeJson(rt.qemuPath) << "\","
        << "\"qemuAarch64Path\":\"" << escapeJson(rt.qemuAarch64Path) << "\","
+       << "\"qemuPpcPath\":\"" << escapeJson(rt.qemuPpcPath) << "\","
        << "\"detail\":\"" << escapeJson(rt.detail) << "\""
        << "}";
     rt.close();
@@ -290,7 +325,14 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeStartSession(
         }
     }
 
-    const bool isAarch64Target = !args.empty() && args[0].find("aarch64") != std::string::npos;
+    QemuTargetArch targetArch = QemuTargetArch::X86_64;
+    if (!args.empty()) {
+        if (args[0].find("aarch64") != std::string::npos) {
+            targetArch = QemuTargetArch::AARCH64;
+        } else if (args[0].find("ppc") != std::string::npos) {
+            targetArch = QemuTargetArch::PPC;
+        }
+    }
 
     // Configure SDL2 Android video/render/audio environment variables before loading SDL2/QEMU
     setenv("SDL_VIDEODRIVER", "android", 1);
@@ -305,7 +347,7 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeStartSession(
     }
 
     gRuntime.close();
-    gRuntime = loadRuntimeForTarget(nativeLibDir, customLibDir, isAarch64Target);
+    gRuntime = loadRuntimeForTarget(nativeLibDir, customLibDir, targetArch);
 
     const bool canBootRealQemu =
         gRuntime.sdlHandle != nullptr && gRuntime.qemuHandle != nullptr &&
@@ -328,7 +370,9 @@ Java_com_qemusdl_app_sdl_NativeQemuBridge_nativeStartSession(
             }
             argv.push_back(nullptr);
 
-            LOGI("Launching in-process qemu-system-x86_64 with %zu args", copiedArgs.size());
+            LOGI("Launching in-process %s with %zu args",
+                 copiedArgs.empty() ? "qemu" : copiedArgs[0].c_str(),
+                 copiedArgs.size());
             if (useQemuInit) {
                 auto initFn = reinterpret_cast<QemuInitFn>(dlsym(qemuHandle, "qemu_init"));
                 auto loopFn = reinterpret_cast<QemuMainLoopFn>(dlsym(qemuHandle, "qemu_main_loop"));

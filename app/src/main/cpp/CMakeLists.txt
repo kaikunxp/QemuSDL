@@ -17,6 +17,10 @@ target_include_directories(qemusdl_bridge PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+target_compile_options(qemusdl_bridge PRIVATE
+    $<$<CONFIG:Release>:-O3 -DNDEBUG -fvisibility=hidden>
+)
+
 find_library(ANDROID_LIB android)
 find_library(LOG_LIB log)
 find_library(EGL_LIB EGL)

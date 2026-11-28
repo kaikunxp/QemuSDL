@@ -27,7 +27,7 @@ fun MainNavigation(
     val backStack = rememberNavBackStack(VmLibraryKey)
 
     fun launchVm(vm: VmConfig) {
-        val intent = if (runtimeStatus.isFullQemuReady) {
+        val intent = if (runtimeStatus.isReadyForArch(vm.architecture)) {
             QemuSdlActivity.createIntent(context, vm)
         } else {
             VmViewportActivity.createIntent(context, vm.id)

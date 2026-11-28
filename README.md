@@ -1,10 +1,15 @@
-# QemuSDL — Android x86_64 QEMU VM Runner with Native SDL2 Viewport
-
-![Vibe Coded](https://img.shields.io/badge/Vibe_Coded-100%25_AI_Generated-8A2BE2?style=for-the-badge)
-![Platform](https://img.shields.io/badge/Android-API_31--36-3DDC84?style=for-the-badge&logo=android&logoColor=white)
-![Architecture](https://img.shields.io/badge/QEMU-x86__64_SoftMMU-FF6600?style=for-the-badge)
-![Renderer](https://img.shields.io/badge/Display-Native_SDL2_%2B_GLES3-00B4D8?style=for-the-badge)
-![UI](https://img.shields.io/badge/Jetpack_Compose-Material_3_Expressive-6750A4?style=for-the-badge)
+<div align="center">
+  <img src="docs/app-icon.png" alt="QemuSDL App Icon" width="128" height="128" />
+  <h1>QemuSDL</h1>
+  <p><strong>Android x86_64 QEMU VM Runner with Native SDL2 Viewport</strong></p>
+  <p>
+    <img src="https://img.shields.io/badge/Vibe_Coded-100%25_AI_Generated-8A2BE2?style=for-the-badge" alt="Vibe Coded" />
+    <img src="https://img.shields.io/badge/Android-API_31--36-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Platform" />
+    <img src="https://img.shields.io/badge/QEMU-x86__64_SoftMMU-FF6600?style=for-the-badge" alt="Architecture" />
+    <img src="https://img.shields.io/badge/Display-Native_SDL2_%2B_GLES3-00B4D8?style=for-the-badge" alt="Renderer" />
+    <img src="https://img.shields.io/badge/Jetpack_Compose-Material_3_Expressive-6750A4?style=for-the-badge" alt="UI" />
+  </p>
+</div>
 
 > [!IMPORTANT]
 > **100% Vibecoded Project**

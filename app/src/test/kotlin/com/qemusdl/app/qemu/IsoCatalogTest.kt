@@ -36,9 +36,19 @@ class IsoCatalogTest {
     fun presetRecommendationsReturnExpectedEntries() {
         assertEquals("alpine-virt-x86_64", IsoCatalog.recommendedForPreset(OsPreset.LINUX_ALPINE).id)
         assertEquals("debian-netinst-amd64", IsoCatalog.recommendedForPreset(OsPreset.LINUX_DEBIAN).id)
+        assertEquals("windows-10-eval-x64", IsoCatalog.recommendedForPreset(OsPreset.WINDOWS).id)
         assertEquals("freedos-13-livecd", IsoCatalog.recommendedForPreset(OsPreset.FREEDOS).id)
         assertEquals("alpine-virt-aarch64", IsoCatalog.recommendedForPreset(OsPreset.LINUX_ALPINE_AARCH64).id)
         assertEquals("debian-netinst-arm64", IsoCatalog.recommendedForPreset(OsPreset.LINUX_DEBIAN_AARCH64).id)
+        assertEquals("windows-11-ltsc-arm64", IsoCatalog.recommendedForPreset(OsPreset.WINDOWS_AARCH64).id)
+        assertEquals("macos-921-ppc", IsoCatalog.recommendedForPreset(OsPreset.MACOS_9).id)
+        assertEquals(
+            "https://archive.org/download/os-9-install-cd/macos_921_ppc.iso",
+            IsoCatalog.recommendedForPresetOrNull(OsPreset.MACOS_9)?.primaryUrl
+        )
+        assertNotNull(IsoCatalog.findById("windows-11-eval-x64"))
+        assertNotNull(IsoCatalog.findById("windows-11-ltsc-x64"))
+        org.junit.Assert.assertNull(IsoCatalog.recommendedForPresetOrNull(OsPreset.MACOS_X_PPC))
     }
 
     @Test

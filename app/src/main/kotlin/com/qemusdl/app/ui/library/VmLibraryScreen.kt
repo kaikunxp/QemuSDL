@@ -137,7 +137,7 @@ fun VmLibraryScreen(
                             style = MaterialTheme.typography.headlineMedium
                         )
                         Text(
-                            text = "x86_64 & AArch64 Virtualization · Native SDL2 Viewport",
+                            text = "x86_64, AArch64 & PowerPC Virtualization · Native SDL2 Viewport",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -357,9 +357,8 @@ private fun RuntimeHeroCard(
     }
 
     val titleText = when {
-        status.isBothArchsReady -> "SDL2 + QEMU (x86_64 & AArch64) Ready"
-        status.isFullQemuReady && status.qemuLoaded -> "SDL2 + QEMU x86_64 Ready"
-        status.isFullQemuReady && status.qemuAarch64Loaded -> "SDL2 + QEMU AArch64 Ready"
+        status.isFullQemuReady && status.readyArchLabels.isNotEmpty() ->
+            "SDL2 + QEMU (${status.readyArchLabels.joinToString(" · ")}) Ready"
         else -> "SDL2 GLES3 Viewport Active"
     }
 
@@ -477,14 +476,14 @@ private fun ExpressiveVmCard(
     val badgeContainer = when (vm.osPreset) {
         OsPreset.LINUX_ALPINE, OsPreset.LINUX_ALPINE_AARCH64 -> MaterialTheme.colorScheme.secondaryContainer
         OsPreset.LINUX_DEBIAN, OsPreset.LINUX_DEBIAN_AARCH64 -> MaterialTheme.colorScheme.primaryContainer
-        OsPreset.WINDOWS, OsPreset.WINDOWS_AARCH64 -> MaterialTheme.colorScheme.tertiaryContainer
+        OsPreset.WINDOWS, OsPreset.WINDOWS_AARCH64, OsPreset.MACOS_9, OsPreset.MACOS_X_PPC -> MaterialTheme.colorScheme.tertiaryContainer
         OsPreset.FREEDOS -> MaterialTheme.colorScheme.surfaceContainerHighest
-        OsPreset.CUSTOM, OsPreset.CUSTOM_AARCH64 -> MaterialTheme.colorScheme.surfaceContainerHigh
+        OsPreset.CUSTOM, OsPreset.CUSTOM_AARCH64, OsPreset.CUSTOM_PPC -> MaterialTheme.colorScheme.surfaceContainerHigh
     }
     val badgeContent = when (vm.osPreset) {
         OsPreset.LINUX_ALPINE, OsPreset.LINUX_ALPINE_AARCH64 -> MaterialTheme.colorScheme.onSecondaryContainer
         OsPreset.LINUX_DEBIAN, OsPreset.LINUX_DEBIAN_AARCH64 -> MaterialTheme.colorScheme.onPrimaryContainer
-        OsPreset.WINDOWS, OsPreset.WINDOWS_AARCH64 -> MaterialTheme.colorScheme.onTertiaryContainer
+        OsPreset.WINDOWS, OsPreset.WINDOWS_AARCH64, OsPreset.MACOS_9, OsPreset.MACOS_X_PPC -> MaterialTheme.colorScheme.onTertiaryContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 

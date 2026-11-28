@@ -230,30 +230,38 @@ fun VmEditorScreen(
             // Compute Card
             item {
                 EditorSectionCard(title = "${config.architecture.badgeText} Compute", icon = Icons.Rounded.Memory) {
+                    val isPpc = config.architecture == GuestArchitecture.PPC
                     Text(
-                        text = "CPU Cores: ${config.cpuCores} vCPU",
+                        text = if (isPpc) "CPU Cores: 1 vCPU (PowerMac mac99/g3beige max)" else "CPU Cores: ${config.cpuCores} vCPU",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Slider(
-                        value = config.cpuCores.toFloat(),
-                        onValueChange = { config = config.copy(cpuCores = it.roundToInt()) },
+                        value = if (isPpc) 1f else config.cpuCores.toFloat(),
+                        onValueChange = { if (!isPpc) config = config.copy(cpuCores = it.roundToInt()) },
+                        enabled = !isPpc,
                         valueRange = 1f..8f,
                         steps = 6
                     )
 
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "Memory (RAM): ${config.memoryMb} MB",
+                        text = if (isPpc) {
+                            "Memory (RAM): ${config.memoryMb.coerceAtMost(2048)} MB (512 MB recommended for Mac OS 9)"
+                        } else {
+                            "Memory (RAM): ${config.memoryMb} MB"
+                        },
                         style = MaterialTheme.typography.titleMedium
                     )
                     Slider(
-                        value = config.memoryMb.toFloat(),
+                        value = if (isPpc) config.memoryMb.coerceIn(128, 2048).toFloat() else config.memoryMb.toFloat(),
                         onValueChange = {
                             val snapped = (it / 128f).roundToInt() * 128
-                            config = config.copy(memoryMb = snapped.coerceIn(256, 8192))
+                            val maxMem = if (isPpc) 2048 else 8192
+                            val minMem = if (isPpc) 128 else 256
+                            config = config.copy(memoryMb = snapped.coerceIn(minMem, maxMem))
                         },
-                        valueRange = 256f..4096f,
-                        steps = 29
+                        valueRange = if (isPpc) 128f..2048f else 256f..4096f,
+                        steps = if (isPpc) 14 else 29
                     )
 
                     Spacer(Modifier.height(10.dp))
@@ -531,12 +539,20 @@ fun VmEditorScreen(
             // USB Host Passthrough & Hardware
             item {
                 EditorSectionCard(title = "USB Host Passthrough", icon = Icons.Rounded.Usb) {
-                    SwitchRow(
-                        title = "xHCI USB 3.0 Controller (-device qemu-xhci)",
-                        subtitle = "High-speed USB 2.0 / 3.0 controller for guest OS (required for USB passthrough)",
-                        checked = config.usbXhciEnabled,
-                        onCheckedChange = { config = config.copy(usbXhciEnabled = it) }
-                    )
+                    if (config.architecture == GuestArchitecture.PPC) {
+                        Text(
+                            text = "PowerPC Mac uses built-in Apple OHCI USB 1.1 (Mac OS 9 does not support xHCI USB 3.0).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        SwitchRow(
+                            title = "xHCI USB 3.0 Controller (-device qemu-xhci)",
+                            subtitle = "High-speed USB 2.0 / 3.0 controller for guest OS (required for USB passthrough)",
+                            checked = config.usbXhciEnabled,
+                            onCheckedChange = { config = config.copy(usbXhciEnabled = it) }
+                        )
+                    }
 
                     Spacer(Modifier.height(10.dp))
                     Row(
@@ -937,6 +953,7 @@ private fun applyArchitectureSwitch(current: VmConfig, arch: GuestArchitecture):
     val defaultPreset = when (arch) {
         GuestArchitecture.X86_64 -> OsPreset.LINUX_ALPINE
         GuestArchitecture.AARCH64 -> OsPreset.LINUX_ALPINE_AARCH64
+        GuestArchitecture.PPC -> OsPreset.MACOS_9
     }
     return applyPresetDefaults(current.copy(architecture = arch), defaultPreset)
 }
@@ -976,7 +993,8 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         displayDevice = DisplayDevice.QXL,
         resolution = DisplayResolution.HD_1280x720,
         diskInterface = DiskInterface.SATA,
-        sdlGlAcceleration = false
+        sdlGlAcceleration = false,
+        recommendedIsoId = "windows-10-eval-x64"
     )
     OsPreset.FREEDOS -> current.copy(
         architecture = GuestArchitecture.X86_64,
@@ -1040,7 +1058,8 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         diskInterface = DiskInterface.VIRTIO,
         sdlGlAcceleration = true,
         usbXhciEnabled = true,
-        usbTabletEnabled = true
+        usbTabletEnabled = true,
+        recommendedIsoId = "windows-11-ltsc-arm64"
     )
     OsPreset.CUSTOM_AARCH64 -> current.copy(
         architecture = GuestArchitecture.AARCH64,
@@ -1050,6 +1069,55 @@ private fun applyPresetDefaults(current: VmConfig, preset: OsPreset): VmConfig =
         displayDevice = if (current.displayDevice.isSupportedOn(GuestArchitecture.AARCH64)) current.displayDevice else DisplayDevice.VIRTIO_GPU_PCI,
         usbXhciEnabled = true,
         usbTabletEnabled = true
+    )
+    OsPreset.MACOS_9 -> current.copy(
+        architecture = GuestArchitecture.PPC,
+        osPreset = preset,
+        cpuModel = "g4",
+        cpuCores = 1,
+        memoryMb = 512,
+        machineType = MachineType.MAC99_PMU,
+        displayDevice = DisplayDevice.STD,
+        resolution = DisplayResolution.XGA_1024x768,
+        diskInterface = DiskInterface.IDE,
+        networkAdapter = NetworkAdapterModel.SUNGEM,
+        sdlGlAcceleration = false,
+        venus3dEnabled = false,
+        usbXhciEnabled = false,
+        usbTabletEnabled = true,
+        audioEnabled = true,
+        recommendedIsoId = "macos-921-ppc"
+    )
+    OsPreset.MACOS_X_PPC -> current.copy(
+        architecture = GuestArchitecture.PPC,
+        osPreset = preset,
+        cpuModel = "g4",
+        cpuCores = 1,
+        memoryMb = 1024,
+        machineType = MachineType.MAC99_PMU,
+        displayDevice = DisplayDevice.STD,
+        resolution = DisplayResolution.XGA_1024x768,
+        diskInterface = DiskInterface.IDE,
+        networkAdapter = NetworkAdapterModel.SUNGEM,
+        sdlGlAcceleration = false,
+        venus3dEnabled = false,
+        usbXhciEnabled = false,
+        usbTabletEnabled = true,
+        audioEnabled = true,
+        recommendedIsoId = null
+    )
+    OsPreset.CUSTOM_PPC -> current.copy(
+        architecture = GuestArchitecture.PPC,
+        osPreset = preset,
+        cpuModel = if (current.cpuModel in GuestArchitecture.PPC.cpuModelOptions) current.cpuModel else "g4",
+        cpuCores = 1,
+        memoryMb = current.memoryMb.coerceIn(128, 2048),
+        machineType = if (current.machineType.supportedArch == GuestArchitecture.PPC) current.machineType else MachineType.MAC99_PMU,
+        displayDevice = if (current.displayDevice.isSupportedOn(GuestArchitecture.PPC)) current.displayDevice else DisplayDevice.STD,
+        diskInterface = if (current.diskInterface == DiskInterface.SATA) DiskInterface.IDE else current.diskInterface,
+        venus3dEnabled = false,
+        usbXhciEnabled = false,
+        recommendedIsoId = null
     )
 }
 

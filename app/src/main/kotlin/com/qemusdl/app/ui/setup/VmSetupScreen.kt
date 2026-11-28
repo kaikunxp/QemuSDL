@@ -95,10 +95,12 @@ fun VmSetupScreen(
     val sourceVm = allVms.firstOrNull { it.id == vmId } ?: VmConfig(id = vmId)
     val recommendedIso = remember(sourceVm.recommendedIsoId, sourceVm.osPreset, sourceVm.architecture) {
         IsoCatalog.findById(sourceVm.recommendedIsoId)
-            ?: IsoCatalog.recommendedForPreset(sourceVm.osPreset, sourceVm.architecture)
+            ?: IsoCatalog.recommendedForPresetOrNull(sourceVm.osPreset, sourceVm.architecture)
     }
-    val recommendedDownloadState = downloadStates[recommendedIso.id] ?: IsoDownloadState.Idle
-    val existingRecommendedIso = downloadedIsos.firstOrNull { it.name == recommendedIso.targetFileName }
+    val recommendedDownloadState = recommendedIso?.let { downloadStates[it.id] } ?: IsoDownloadState.Idle
+    val existingRecommendedIso = recommendedIso?.let { rec ->
+        downloadedIsos.firstOrNull { it.name == rec.targetFileName }
+    }
 
     var selectedIsoPath by remember(sourceVm.isoPathOrUri, existingRecommendedIso?.path) {
         mutableStateOf(
@@ -118,6 +120,8 @@ fun VmSetupScreen(
                 OsPreset.LINUX_ALPINE, OsPreset.LINUX_ALPINE_AARCH64 -> 4096
                 OsPreset.LINUX_DEBIAN, OsPreset.LINUX_DEBIAN_AARCH64 -> 16384
                 OsPreset.FREEDOS -> 512
+                OsPreset.MACOS_9 -> 2048
+                OsPreset.MACOS_X_PPC -> 8192
                 else -> 8192
             }
         )
@@ -271,7 +275,7 @@ fun VmSetupScreen(
                                 }
                             }
                             Spacer(Modifier.height(12.dp))
-                        } else {
+                        } else if (recommendedIso != null) {
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = MaterialTheme.shapes.medium,
@@ -321,6 +325,26 @@ fun VmSetupScreen(
                                             Text("Download ${recommendedIso.title}")
                                         }
                                     }
+                                }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        } else {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = MaterialTheme.shapes.medium,
+                                color = MaterialTheme.colorScheme.surfaceContainerHighest
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Text(
+                                        text = "Attach your ${sourceVm.osPreset.displayName} Installer ISO",
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = "Use Pick File below to select a Mac OS 9.2.2 (.iso / .toast / .img) installer image from device storage, or open ISO Catalog to download from a custom URL. OpenBIOS (openbios-ppc) and qemu_vga.ndrv are already bundled.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
                             }
                             Spacer(Modifier.height(12.dp))

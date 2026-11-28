@@ -128,7 +128,7 @@ fun IsoDownloaderScreen(
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "Curated x86_64 & AArch64 OS Images",
+                        text = "Curated x86_64, AArch64 & PowerPC OS Images",
                         style = MaterialTheme.typography.titleLarge
                     )
                     FlowRow(
@@ -204,7 +204,7 @@ fun IsoDownloaderScreen(
                         }
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            text = "Paste a direct HTTPS link to any x86_64 .iso or .zip archive containing an .iso.",
+                            text = "Paste a direct HTTPS link to any .iso or .zip archive containing an .iso.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -212,7 +212,7 @@ fun IsoDownloaderScreen(
                         OutlinedTextField(
                             value = customUrl,
                             onValueChange = { customUrl = it },
-                            label = { Text("https://example.org/os-x86_64.iso") },
+                            label = { Text("https://example.org/os-image.iso") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )

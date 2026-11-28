@@ -143,6 +143,8 @@ class VmRepository(private val appContext: Context) {
                             OsPreset.FREEDOS -> "freedos-13-livecd"
                             OsPreset.LINUX_ALPINE_AARCH64 -> "alpine-virt-aarch64"
                             OsPreset.LINUX_DEBIAN_AARCH64 -> "debian-netinst-arm64"
+                            OsPreset.MACOS_9 -> "macos-921-ppc"
+                            OsPreset.MACOS_X_PPC, OsPreset.CUSTOM_PPC -> null
                             else -> "alpine-virt-x86_64"
                         }
                         vm.copy(isSetupComplete = false, recommendedIsoId = recIso)
@@ -150,12 +152,14 @@ class VmRepository(private val appContext: Context) {
                         vm
                     }
                 }
-                val hasAarch64Preset = migrated.any { it.architecture == GuestArchitecture.AARCH64 }
-                val finalVms = if (!hasAarch64Preset) {
+                var finalVms = migrated
+                if (finalVms.none { it.architecture == GuestArchitecture.AARCH64 }) {
                     mutated = true
-                    migrated + defaultAarch64StarterVms()
-                } else {
-                    migrated
+                    finalVms = finalVms + defaultAarch64StarterVms()
+                }
+                if (finalVms.none { it.architecture == GuestArchitecture.PPC }) {
+                    mutated = true
+                    finalVms = finalVms + defaultPpcStarterVms()
                 }
                 if (mutated) {
                     runCatching { configFile.writeText(json.encodeToString(finalVms)) }
@@ -163,7 +167,7 @@ class VmRepository(private val appContext: Context) {
                 return finalVms
             }
         }
-        val defaults = defaultStarterVms() + defaultAarch64StarterVms()
+        val defaults = defaultStarterVms() + defaultAarch64StarterVms() + defaultPpcStarterVms()
         runCatching { configFile.writeText(json.encodeToString(defaults)) }
         return defaults
     }
@@ -269,6 +273,31 @@ class VmRepository(private val appContext: Context) {
             usbTabletEnabled = true,
             isSetupComplete = false,
             recommendedIsoId = "debian-netinst-arm64"
+        )
+    )
+
+    private fun defaultPpcStarterVms(): List<VmConfig> = listOf(
+        VmConfig(
+            id = "preset-macos9-ppc",
+            name = "Mac OS 9.2 (PowerPC G4)",
+            architecture = GuestArchitecture.PPC,
+            osPreset = OsPreset.MACOS_9,
+            cpuModel = "g4",
+            cpuCores = 1,
+            memoryMb = 512,
+            machineType = MachineType.MAC99_PMU,
+            displayDevice = DisplayDevice.STD,
+            resolution = DisplayResolution.XGA_1024x768,
+            sdlGlAcceleration = false,
+            bootOrder = BootOrder.CDROM_FIRST,
+            diskInterface = DiskInterface.IDE,
+            networkEnabled = true,
+            networkAdapter = NetworkAdapterModel.SUNGEM,
+            audioEnabled = true,
+            usbXhciEnabled = false,
+            usbTabletEnabled = true,
+            isSetupComplete = false,
+            recommendedIsoId = "macos-921-ppc"
         )
     )
 

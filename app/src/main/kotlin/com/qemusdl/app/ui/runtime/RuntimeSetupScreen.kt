@@ -165,6 +165,11 @@ fun RuntimeSetupScreen(
                             present = status.qemuAarch64Loaded && status.hasQemuEntry
                         )
                         NativeCheckRow(
+                            name = "libqemu-system-ppc.so",
+                            subtitle = status.qemuPpcPath.ifBlank { "In-process QEMU PowerPC softmmu (-machine mac99, OpenBIOS, Mac OS 9)" },
+                            present = status.qemuPpcLoaded && status.hasQemuEntry
+                        )
+                        NativeCheckRow(
                             name = "libusb-1.0.so",
                             subtitle = if (status.hasLibusb) "Android USB OTG host passthrough ready (/proc/self/fd)" else "USB host passthrough library",
                             present = status.hasLibusb

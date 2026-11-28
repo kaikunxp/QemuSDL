@@ -265,8 +265,8 @@ objcopy = '$OBJCOPY'
 pkg-config = '$(which pkg-config)'
 
 [built-in options]
-c_args = ['-fPIC', '-O2', '-I$PREFIX/include', '-I$PREFIX/include/SDL2']
-cpp_args = ['-fPIC', '-O2', '-I$PREFIX/include', '-I$PREFIX/include/SDL2']
+c_args = ['-fPIC', '-O3', '-DNDEBUG', '-I$PREFIX/include', '-I$PREFIX/include/SDL2']
+cpp_args = ['-fPIC', '-O3', '-DNDEBUG', '-I$PREFIX/include', '-I$PREFIX/include/SDL2']
 c_link_args = ['-L$PREFIX/lib', '-llog', '-landroid']
 cpp_link_args = ['-L$PREFIX/lib', '-llog', '-landroid']
 
@@ -300,7 +300,7 @@ if [[ ! -f "$PREFIX/lib/libffi.a" ]]; then
   rm -rf "$WORK_DIR/build-libffi-$ABI"
   mkdir -p "$WORK_DIR/build-libffi-$ABI"
   pushd "$WORK_DIR/build-libffi-$ABI" >/dev/null
-  CC="$CC" AR="$AR" RANLIB="$RANLIB" CFLAGS="-fPIC -O2" \
+  CC="$CC" AR="$AR" RANLIB="$RANLIB" CFLAGS="-fPIC -O3 -DNDEBUG" \
     "$LIBFFI_SRC/configure" \
     --host="$TRIPLE" \
     --prefix="$PREFIX" \
@@ -357,6 +357,8 @@ if [[ ! -f "$PREFIX/lib/libglib-2.0.a" ]]; then
   rm -rf "$WORK_DIR/build-glib-$ABI"
   meson setup "$WORK_DIR/build-glib-$ABI" "$GLIB_SRC" \
     --cross-file="$CROSS_FILE" \
+    --buildtype=release \
+    -Db_ndebug=true \
     --prefix="$PREFIX" \
     --libdir=lib \
     --default-library=static \
@@ -390,6 +392,8 @@ if [[ ! -f "$PREFIX/lib/libpixman-1.a" ]]; then
   rm -rf "$WORK_DIR/build-pixman-$ABI"
   meson setup "$WORK_DIR/build-pixman-$ABI" "$PIXMAN_SRC" \
     --cross-file="$CROSS_FILE" \
+    --buildtype=release \
+    -Db_ndebug=true \
     --prefix="$PREFIX" \
     --libdir=lib \
     --default-library=static \
@@ -419,6 +423,8 @@ if [[ ! -f "$PREFIX/lib/libslirp.a" ]]; then
   rm -rf "$WORK_DIR/build-slirp-$ABI"
   meson setup "$WORK_DIR/build-slirp-$ABI" "$SLIRP_SRC" \
     --cross-file="$CROSS_FILE" \
+    --buildtype=release \
+    -Db_ndebug=true \
     --prefix="$PREFIX" \
     --libdir=lib \
     --default-library=static
@@ -454,7 +460,7 @@ if [[ ! -f "$PREFIX/lib/libusb-1.0.so" ]]; then
     AR="$AR" \
     RANLIB="$RANLIB" \
     STRIP="$STRIP" \
-    CFLAGS="-O2 -fPIC -D_GNU_SOURCE"
+    CFLAGS="-O3 -fPIC -DNDEBUG -D_GNU_SOURCE"
   make -j"$JOBS"
   make install
   popd >/dev/null
@@ -480,6 +486,8 @@ if [[ ! -f "$PREFIX/lib/libdrm.a" ]]; then
   rm -rf "$WORK_DIR/build-drm-$ABI"
   meson setup "$WORK_DIR/build-drm-$ABI" "$DRM_SRC" \
     --cross-file="$CROSS_FILE" \
+    --buildtype=release \
+    -Db_ndebug=true \
     --prefix="$PREFIX" \
     --libdir=lib \
     --default-library=static \
@@ -550,6 +558,8 @@ PYEOF
   rm -rf "$WORK_DIR/build-epoxy-$ABI"
   meson setup "$WORK_DIR/build-epoxy-$ABI" "$EPOXY_SRC" \
     --cross-file="$CROSS_FILE" \
+    --buildtype=release \
+    -Db_ndebug=true \
     --prefix="$PREFIX" \
     --libdir=lib \
     --default-library=static \
@@ -603,6 +613,8 @@ PYEOF
   rm -rf "$WORK_DIR/build-virgl-$ABI"
   meson setup "$WORK_DIR/build-virgl-$ABI" "$VIRGL_SRC" \
     --cross-file="$CROSS_FILE" \
+    --buildtype=release \
+    -Db_ndebug=true \
     --prefix="$PREFIX" \
     --libdir=lib \
     --default-library=static \
@@ -798,7 +810,7 @@ QEMU_BUILD="$WORK_DIR/build-qemu-$ABI"
 rm -rf "$QEMU_BUILD"
 mkdir -p "$QEMU_BUILD"
 
-echo "[11/11] Configuring QEMU ${QEMU_VERSION} (x86_64-softmmu + aarch64-softmmu, SDL2, Venus 3D / virgl, no VNC)..."
+echo "[11/11] Configuring QEMU ${QEMU_VERSION} (x86_64-softmmu + aarch64-softmmu + ppc-softmmu, SDL2, Venus 3D / virgl, no VNC)..."
 pushd "$QEMU_BUILD" >/dev/null
 PKG_CONFIG_LIBDIR="$PKGCFG_DIR" \
 PKG_CONFIG_PATH="$PKGCFG_DIR" \
@@ -817,7 +829,7 @@ MESON="$(which meson)" \
   --python="$HOST_VENV/bin/python3" \
   --ninja="$(which ninja)" \
   --cpu="$QEMU_CPU" \
-  --target-list=x86_64-softmmu,aarch64-softmmu \
+  --target-list=x86_64-softmmu,aarch64-softmmu,ppc-softmmu \
   --prefix="$PREFIX" \
   --enable-sdl \
   --disable-vnc \
@@ -845,13 +857,18 @@ MESON="$(which meson)" \
   --disable-virtfs \
   --disable-capstone \
   --enable-fdt=internal \
+  --disable-debug-info \
+  --disable-debug-tcg \
+  --disable-debug-mutex \
+  --disable-debug-graph-lock \
+  --disable-qom-cast-debug \
   --disable-werror \
   --disable-pie \
-  --extra-cflags="-fPIC -O2 -I$PREFIX/include -I$PREFIX/include/SDL2 -I$PREFIX/include/libusb-1.0 -I$PREFIX/include/virgl -I$PREFIX/include/epoxy" \
+  --extra-cflags="-fPIC -O3 -DNDEBUG -I$PREFIX/include -I$PREFIX/include/SDL2 -I$PREFIX/include/libusb-1.0 -I$PREFIX/include/virgl -I$PREFIX/include/epoxy" \
   --extra-ldflags="-L$PREFIX/lib -lSDL2 -lusb-1.0 -lvirglrenderer -lepoxy -ldrm -lvulkan -lEGL -lGLESv3 -llog -landroid -lz"
 
-echo "[11/11] Compiling libqemu-system-x86_64.so and libqemu-system-aarch64.so..."
-ninja -j"$JOBS" libqemu-system-x86_64.so libqemu-system-aarch64.so pc-bios/edk2-aarch64-code.fd pc-bios/edk2-arm-vars.fd
+echo "[11/11] Compiling libqemu-system-x86_64.so, libqemu-system-aarch64.so, and libqemu-system-ppc.so..."
+ninja -j"$JOBS" libqemu-system-x86_64.so libqemu-system-aarch64.so libqemu-system-ppc.so pc-bios/edk2-aarch64-code.fd pc-bios/edk2-arm-vars.fd
 popd >/dev/null
 
 cp -f "$QEMU_BUILD/libqemu-system-x86_64.so" "$JNI_OUT/libqemu-system-x86_64.so"
@@ -860,12 +877,16 @@ cp -f "$QEMU_BUILD/libqemu-system-x86_64.so" "$JNI_OUT/libqemu-system-x86_64.so"
 cp -f "$QEMU_BUILD/libqemu-system-aarch64.so" "$JNI_OUT/libqemu-system-aarch64.so"
 "$STRIP" --strip-unneeded "$JNI_OUT/libqemu-system-aarch64.so"
 
-# Copy x86_64 SeaBIOS / VGABIOS / PXE + AArch64 EDK2 UEFI firmware + keymaps into Android assets
-echo "Bundling SeaBIOS/VGABIOS/EDK2 firmware into $FIRMWARE_ASSETS_OUT..."
+cp -f "$QEMU_BUILD/libqemu-system-ppc.so" "$JNI_OUT/libqemu-system-ppc.so"
+"$STRIP" --strip-unneeded "$JNI_OUT/libqemu-system-ppc.so"
+
+# Copy x86_64 SeaBIOS / VGABIOS / PXE + AArch64 EDK2 UEFI + PowerPC OpenBIOS / Mac OS 9 NDRV + keymaps into Android assets
+echo "Bundling SeaBIOS/VGABIOS/EDK2/OpenBIOS PPC firmware into $FIRMWARE_ASSETS_OUT..."
 for rom in \
   bios.bin bios-256k.bin bios-microvm.bin \
   vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-qxl.bin \
-  vgabios-vmware.bin vgabios-cirrus.bin vgabios-bochs-display.bin vgabios-ramfb.bin \
+  vgabios-vmware.bin vgabios-cirrus.bin vgabios-bochs-display.bin vgabios-ramfb.bin vgabios-ati.bin \
+  openbios-ppc qemu_vga.ndrv \
   efi-virtio.rom efi-e1000.rom efi-e1000e.rom efi-rtl8139.rom \
   kvmvapic.bin linuxboot.bin linuxboot_dma.bin; do
   if [[ -f "$QEMU_SRC/pc-bios/$rom" ]]; then
@@ -889,5 +910,6 @@ echo "  - $JNI_OUT/libSDL2.so"
 echo "  - $JNI_OUT/libusb-1.0.so"
 echo "  - $JNI_OUT/libqemu-system-x86_64.so"
 echo "  - $JNI_OUT/libqemu-system-aarch64.so"
-echo "  - $FIRMWARE_ASSETS_OUT/ (SeaBIOS + EDK2 AArch64 + VGABIOS + keymaps)"
+echo "  - $JNI_OUT/libqemu-system-ppc.so"
+echo "  - $FIRMWARE_ASSETS_OUT/ (SeaBIOS + EDK2 AArch64 + OpenBIOS PPC + qemu_vga.ndrv + VGABIOS + keymaps)"
 echo "============================================================"

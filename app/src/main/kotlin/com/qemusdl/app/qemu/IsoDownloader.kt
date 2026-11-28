@@ -119,6 +119,39 @@ object IsoCatalog {
             primaryUrl = "https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.3/official/FD13-LiveCD.zip",
             extractIsoFromZip = true
         ),
+        IsoCatalogEntry(
+            id = "windows-10-eval-x64",
+            title = "Windows 10 Enterprise 22H2 (x64)",
+            subtitle = "Official Microsoft 90-day evaluation ISO (en-US) — boots directly on Q35 without TPM 2.0",
+            approxSizeLabel = "~5.2 GB",
+            preset = OsPreset.WINDOWS,
+            architecture = GuestArchitecture.X86_64,
+            targetFileName = "Win10_22H2_Enterprise_Eval_x64_en-us.iso",
+            resolveStrategy = IsoResolveStrategy.DIRECT_URL,
+            primaryUrl = "https://go.microsoft.com/fwlink/p/?LinkID=2208844&clcid=0x409&culture=en-us&country=US"
+        ),
+        IsoCatalogEntry(
+            id = "windows-11-eval-x64",
+            title = "Windows 11 Enterprise 25H2 (x64)",
+            subtitle = "Official Microsoft 90-day evaluation ISO (en-US) — direct from Microsoft",
+            approxSizeLabel = "~6.6 GB",
+            preset = OsPreset.WINDOWS,
+            architecture = GuestArchitecture.X86_64,
+            targetFileName = "Win11_25H2_Enterprise_Eval_x64_en-us.iso",
+            resolveStrategy = IsoResolveStrategy.DIRECT_URL,
+            primaryUrl = "https://go.microsoft.com/fwlink/?linkid=2334167"
+        ),
+        IsoCatalogEntry(
+            id = "windows-11-ltsc-x64",
+            title = "Windows 11 Enterprise LTSC 2024 (x64)",
+            subtitle = "Lighter official Microsoft LTSC evaluation ISO (en-US) — smaller footprint for QEMU",
+            approxSizeLabel = "~4.8 GB",
+            preset = OsPreset.WINDOWS,
+            architecture = GuestArchitecture.X86_64,
+            targetFileName = "Win11_LTSC_2024_Eval_x64_en-us.iso",
+            resolveStrategy = IsoResolveStrategy.DIRECT_URL,
+            primaryUrl = "https://go.microsoft.com/fwlink/?linkid=2289029"
+        ),
         // AArch64 (ARM64) Images
         IsoCatalogEntry(
             id = "alpine-virt-aarch64",
@@ -158,6 +191,29 @@ object IsoCatalog {
             primaryUrl = "https://cdimage.debian.org/debian-cd/current/arm64/iso-cd/SHA256SUMS",
             regexPattern = """(debian-[0-9.]+-arm64-netinst\.iso)""",
             baseDownloadUrl = "https://cdimage.debian.org/debian-cd/current/arm64/iso-cd/"
+        ),
+        IsoCatalogEntry(
+            id = "windows-11-ltsc-arm64",
+            title = "Windows 11 IoT LTSC 2024 (ARM64)",
+            subtitle = "Official Microsoft ARM64 evaluation ISO (en-US) for QEMU AArch64 virt + EDK2 UEFI",
+            approxSizeLabel = "~4.7 GB",
+            preset = OsPreset.WINDOWS_AARCH64,
+            architecture = GuestArchitecture.AARCH64,
+            targetFileName = "Win11_IoT_LTSC_2024_Eval_ARM64_en-us.iso",
+            resolveStrategy = IsoResolveStrategy.DIRECT_URL,
+            primaryUrl = "https://go.microsoft.com/fwlink/?linkid=2269595&clcid=0x409&culture=en-us&country=us"
+        ),
+        // PowerPC (Classic Mac OS) Images
+        IsoCatalogEntry(
+            id = "macos-921-ppc",
+            title = "Mac OS 9.2.1 Install CD (PowerPC)",
+            subtitle = "Bootable Classic Mac OS 9.2.1 installer ISO from Internet Archive — ready for mac99,via=pmu",
+            approxSizeLabel = "~640 MB",
+            preset = OsPreset.MACOS_9,
+            architecture = GuestArchitecture.PPC,
+            targetFileName = "macos_921_ppc.iso",
+            resolveStrategy = IsoResolveStrategy.DIRECT_URL,
+            primaryUrl = "https://archive.org/download/os-9-install-cd/macos_921_ppc.iso"
         )
     )
 
@@ -169,15 +225,24 @@ object IsoCatalog {
     fun recommendedForPreset(preset: OsPreset, arch: GuestArchitecture = preset.defaultArch): IsoCatalogEntry = when (preset) {
         OsPreset.LINUX_ALPINE -> findById("alpine-virt-x86_64") ?: entries.first()
         OsPreset.LINUX_DEBIAN -> findById("debian-netinst-amd64") ?: entries.first()
+        OsPreset.WINDOWS -> findById("windows-10-eval-x64") ?: entries.first()
         OsPreset.FREEDOS -> findById("freedos-13-livecd") ?: entries.first()
         OsPreset.LINUX_ALPINE_AARCH64 -> findById("alpine-virt-aarch64") ?: entries.first()
         OsPreset.LINUX_DEBIAN_AARCH64 -> findById("debian-netinst-arm64") ?: entries.first()
-        else -> if (arch == GuestArchitecture.AARCH64) {
-            findById("alpine-virt-aarch64") ?: entries.first()
-        } else {
-            findById("alpine-virt-x86_64") ?: entries.first()
+        OsPreset.WINDOWS_AARCH64 -> findById("windows-11-ltsc-arm64") ?: entries.first()
+        OsPreset.MACOS_9 -> findById("macos-921-ppc") ?: entries.first()
+        else -> when (arch) {
+            GuestArchitecture.AARCH64 -> findById("alpine-virt-aarch64") ?: entries.first()
+            GuestArchitecture.PPC -> findById("macos-921-ppc") ?: entries.first()
+            GuestArchitecture.X86_64 -> findById("alpine-virt-x86_64") ?: entries.first()
         }
     }
+
+    fun recommendedForPresetOrNull(preset: OsPreset, arch: GuestArchitecture = preset.defaultArch): IsoCatalogEntry? =
+        when (preset) {
+            OsPreset.MACOS_X_PPC, OsPreset.CUSTOM_PPC -> null
+            else -> recommendedForPreset(preset, arch)
+        }
 }
 
 class IsoDownloader(context: Context) {

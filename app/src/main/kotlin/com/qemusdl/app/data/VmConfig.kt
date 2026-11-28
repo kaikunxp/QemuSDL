@@ -30,6 +30,15 @@ enum class GuestArchitecture(
         badgeText = "AArch64",
         defaultCpuModel = "max",
         cpuModelOptions = listOf("max", "cortex-a72", "cortex-a76", "cortex-a57", "neoverse-n1")
+    ),
+    PPC(
+        qemuBinaryName = "qemu-system-ppc",
+        soFileName = "libqemu-system-ppc.so",
+        soShortLibName = "qemu-system-ppc",
+        label = "PowerPC (Mac99 / G3 / G4)",
+        badgeText = "PPC",
+        defaultCpuModel = "g4",
+        cpuModelOptions = listOf("g4", "g3", "7400", "7457", "604e")
     )
 }
 
@@ -47,7 +56,10 @@ enum class OsPreset(
     LINUX_ALPINE_AARCH64("Alpine Linux (AArch64)", "ALPINE ARM64", GuestArchitecture.AARCH64),
     LINUX_DEBIAN_AARCH64("Debian / Ubuntu (AArch64)", "DEBIAN ARM64", GuestArchitecture.AARCH64),
     WINDOWS_AARCH64("Windows 11 ARM64", "WIN ARM64", GuestArchitecture.AARCH64),
-    CUSTOM_AARCH64("Custom AArch64", "AARCH64", GuestArchitecture.AARCH64)
+    CUSTOM_AARCH64("Custom AArch64", "AARCH64", GuestArchitecture.AARCH64),
+    MACOS_9("Mac OS 9 (PowerPC)", "MAC OS 9", GuestArchitecture.PPC),
+    MACOS_X_PPC("Mac OS X (PowerPC)", "MAC OS X", GuestArchitecture.PPC),
+    CUSTOM_PPC("Custom PowerPC", "PPC", GuestArchitecture.PPC)
 }
 
 @Serializable
@@ -59,7 +71,11 @@ enum class MachineType(
     Q35("q35", "Q35 (PCIe Modern x86_64)", GuestArchitecture.X86_64),
     PC("pc", "i440FX (Legacy PC x86_64)", GuestArchitecture.X86_64),
     VIRT("virt", "ARM Virt (PCIe Modern AArch64)", GuestArchitecture.AARCH64),
-    SBSA_REF("sbsa-ref", "ARM SBSA Reference Server", GuestArchitecture.AARCH64);
+    SBSA_REF("sbsa-ref", "ARM SBSA Reference Server", GuestArchitecture.AARCH64),
+    MAC99_PMU("mac99,via=pmu", "Mac99 PMU (Mac OS 9.2 / OS X USB)", GuestArchitecture.PPC),
+    MAC99_PMU_ADB("mac99,via=pmu-adb", "Mac99 PMU+ADB (Mac OS 9.0–9.2)", GuestArchitecture.PPC),
+    MAC99_CUDA("mac99", "Mac99 CUDA (Classic ADB)", GuestArchitecture.PPC),
+    G3_BEIGE("g3beige", "Power Mac G3 Beige (Mac OS 8.6–9.2)", GuestArchitecture.PPC);
 
     companion object {
         fun forArch(arch: GuestArchitecture): List<MachineType> =
@@ -68,6 +84,7 @@ enum class MachineType(
         fun defaultForArch(arch: GuestArchitecture): MachineType = when (arch) {
             GuestArchitecture.X86_64 -> Q35
             GuestArchitecture.AARCH64 -> VIRT
+            GuestArchitecture.PPC -> MAC99_PMU
         }
     }
 }
@@ -78,21 +95,24 @@ enum class DisplayDevice(
     val label: String,
     val supportsVenus: Boolean = false,
     val supportsX86: Boolean = true,
-    val supportsAarch64: Boolean = true
+    val supportsAarch64: Boolean = true,
+    val supportsPpc: Boolean = false
 ) {
-    VIRTIO_VGA_GL("virtio-vga-gl", "VirtIO VGA GL (Venus 3D)", supportsVenus = true, supportsX86 = true, supportsAarch64 = false),
-    VIRTIO_GPU_GL_PCI("virtio-gpu-gl-pci", "VirtIO GPU GL PCI (Venus 3D)", supportsVenus = true, supportsX86 = false, supportsAarch64 = true),
-    VIRTIO_VGA("virtio-vga", "VirtIO VGA", supportsVenus = true, supportsX86 = true, supportsAarch64 = false),
-    VIRTIO_GPU_PCI("virtio-gpu-pci", "VirtIO GPU PCI", supportsVenus = true, supportsX86 = false, supportsAarch64 = true),
-    RAMFB("ramfb", "RAMFB (UEFI Early Framebuffer)", supportsVenus = false, supportsX86 = false, supportsAarch64 = true),
-    BOCHS_DISPLAY("bochs-display", "Bochs Display PCI", supportsVenus = false, supportsX86 = true, supportsAarch64 = true),
-    STD("std", "Standard VGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false),
-    QXL("qxl-vga", "QXL VGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false),
-    VMWARE("vmware-svga", "VMware SVGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false);
+    VIRTIO_VGA_GL("virtio-vga-gl", "VirtIO VGA GL (Venus 3D)", supportsVenus = true, supportsX86 = true, supportsAarch64 = false, supportsPpc = false),
+    VIRTIO_GPU_GL_PCI("virtio-gpu-gl-pci", "VirtIO GPU GL PCI (Venus 3D)", supportsVenus = true, supportsX86 = false, supportsAarch64 = true, supportsPpc = false),
+    VIRTIO_VGA("virtio-vga", "VirtIO VGA", supportsVenus = true, supportsX86 = true, supportsAarch64 = false, supportsPpc = false),
+    VIRTIO_GPU_PCI("virtio-gpu-pci", "VirtIO GPU PCI", supportsVenus = true, supportsX86 = false, supportsAarch64 = true, supportsPpc = false),
+    RAMFB("ramfb", "RAMFB (UEFI Early Framebuffer)", supportsVenus = false, supportsX86 = false, supportsAarch64 = true, supportsPpc = false),
+    BOCHS_DISPLAY("bochs-display", "Bochs Display PCI", supportsVenus = false, supportsX86 = true, supportsAarch64 = true, supportsPpc = true),
+    STD("std", "Standard VGA (OpenBIOS / qemu_vga.ndrv)", supportsVenus = false, supportsX86 = true, supportsAarch64 = false, supportsPpc = true),
+    ATI_VGA("ati-vga", "ATI Rage 128 Pro (PPC)", supportsVenus = false, supportsX86 = false, supportsAarch64 = false, supportsPpc = true),
+    QXL("qxl-vga", "QXL VGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false, supportsPpc = false),
+    VMWARE("vmware-svga", "VMware SVGA", supportsVenus = false, supportsX86 = true, supportsAarch64 = false, supportsPpc = false);
 
     fun isSupportedOn(arch: GuestArchitecture): Boolean = when (arch) {
         GuestArchitecture.X86_64 -> supportsX86
         GuestArchitecture.AARCH64 -> supportsAarch64
+        GuestArchitecture.PPC -> supportsPpc
     }
 
     companion object {
@@ -102,6 +122,7 @@ enum class DisplayDevice(
         fun defaultForArch(arch: GuestArchitecture): DisplayDevice = when (arch) {
             GuestArchitecture.X86_64 -> VIRTIO_VGA
             GuestArchitecture.AARCH64 -> VIRTIO_GPU_PCI
+            GuestArchitecture.PPC -> STD
         }
     }
 }
@@ -179,6 +200,11 @@ enum class NetworkAdapterModel(
         qemuModel = "e1000e",
         label = "Intel e1000e (PCIe)",
         description = "Modern Intel 82574L PCIe Gigabit adapter for Q35 / ARM Virt PCIe machines"
+    ),
+    SUNGEM(
+        qemuModel = "sungem",
+        label = "Apple SunGEM (Mac OS 9 / PPC)",
+        description = "Built-in PowerMac G4 Gigabit Ethernet controller — native driver included in Mac OS 9.2 and Mac OS X"
     )
 }
 

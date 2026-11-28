@@ -15,6 +15,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,6 +26,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -48,16 +54,21 @@ jobs:
           fi
           keytool -list -keystore debug.keystore -storepass android | grep -E "Alias name:|Certificate fingerprint"
 
-      - name: Accept Android SDK licenses and install NDK / CMake
+      - name: Install missing Android SDK / NDK / CMake packages
         run: |
           SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          "$SDKMANAGER" \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "ndk;28.2.13676358" \
-            "cmake;3.22.1"
+          PACKAGES=()
+          [ -d "$SDK_ROOT/platforms/android-36" ] || PACKAGES+=("platforms;android-36")
+          [ -d "$SDK_ROOT/build-tools/36.0.0" ] || PACKAGES+=("build-tools;36.0.0")
+          [ -d "$SDK_ROOT/ndk/28.2.13676358" ] || PACKAGES+=("ndk;28.2.13676358")
+          [ -d "$SDK_ROOT/cmake/3.22.1" ] || PACKAGES+=("cmake;3.22.1")
+          if [ "${#PACKAGES[@]}" -gt 0 ]; then
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            "$SDKMANAGER" "${PACKAGES[@]}"
+          else
+            echo "All required Android SDK / NDK / CMake packages already present."
+          fi
 
       - name: Check native QEMU + SDL2 binaries
         id: native_check
@@ -65,11 +76,16 @@ jobs:
           FORCE="${{ inputs.rebuild_native || false }}"
           if [ "$FORCE" = "true" ] || \
              [ ! -f app/src/main/jniLibs/arm64-v8a/libSDL2.so ] || \
-             [ ! -f app/src/main/jniLibs/arm64-v8a/libqemu-system-x86_64.so ]; then
+             [ ! -f app/src/main/jniLibs/arm64-v8a/libusb-1.0.so ] || \
+             [ ! -f app/src/main/jniLibs/arm64-v8a/libqemu-system-x86_64.so ] || \
+             [ ! -f app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so ] || \
+             [ ! -f app/src/main/jniLibs/arm64-v8a/libqemu-system-ppc.so ] || \
+             [ ! -f app/src/main/assets/qemu-firmware/openbios-ppc ] || \
+             [ ! -f app/src/main/assets/qemu-firmware/qemu_vga.ndrv ]; then
             echo "need_build=true" >> "$GITHUB_OUTPUT"
           else
             echo "need_build=false" >> "$GITHUB_OUTPUT"
-            echo "Using bundled arm64-v8a native libraries from app/src/main/jniLibs/arm64-v8a/"
+            echo "Using bundled arm64-v8a native libraries (x86_64, aarch64, ppc) & firmware."
           fi
 
       - name: Cache native cross-build prefix
@@ -77,16 +93,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .native-build.nosync
-          key: qemusdl-native-arm64-${{ hashFiles('scripts/build-sdl2-qemu-android.sh', 'scripts/patches/**') }}
+          key: qemusdl-native-arm64-opt-${{ hashFiles('scripts/build-sdl2-qemu-android.sh', 'scripts/patches/**') }}
           restore-keys: |
-            qemusdl-native-arm64-
+            qemusdl-native-arm64-opt-
 
-      - name: Cross-compile SDL2 + QEMU native libraries (arm64-v8a)
+      - name: Cross-compile optimized SDL2 + QEMU native libraries (arm64-v8a)
         if: steps.native_check.outputs.need_build == 'true'
         run: |
           export ANDROID_NDK_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}/ndk/28.2.13676358"
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential meson ninja-build pkg-config \
             python3 python3-venv python3-pip cmake \
             autoconf automake libtool bzip2 xz-utils curl
@@ -96,25 +112,28 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run unit tests
-        run: |
-          chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --no-daemon --console=plain
-
-      - name: Build Signed Release APK
+      - name: Run Release Unit Tests & Build Optimized Signed Release APK
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/ci-release.keystore
           STORE_PASSWORD: android
           KEY_ALIAS: upload
           KEY_PASSWORD: android
         run: |
+          chmod +x gradlew
           cp debug.keystore "$KEYSTORE_PATH"
           keytool -changealias \
             -keystore "$KEYSTORE_PATH" \
             -storepass android \
             -alias androiddebugkey \
             -destalias upload
-          ./gradlew :app:assembleRelease --no-daemon --console=plain
+          ./gradlew :app:testReleaseUnitTest :app:assembleRelease \
+            -PtargetAbis=arm64-v8a \
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:+UseParallelGC -Dfile.encoding=UTF-8" \
+            -Dkotlin.daemon.jvmargs="-Xmx2g" \
+            --build-cache \
+            --parallel \
+            --no-daemon \
+            --console=plain
           rm -f "$KEYSTORE_PATH"
 
       - name: Prepare named APK

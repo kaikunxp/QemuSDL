@@ -5,16 +5,19 @@ import java.io.File
 
 /**
  * Extracts bundled x86_64 SeaBIOS, VGABIOS, PXE ROMs, AArch64 EDK2 UEFI firmware
- * (`edk2-aarch64-code.fd` + `edk2-arm-vars.fd`), and keymaps from
- * `assets/qemu-firmware/` into `filesDir/qemu-firmware/` so QEMU can boot
- * via `-L <firmwareDir>` and `-drive if=pflash` on Android without `/usr/share/qemu`.
+ * (`edk2-aarch64-code.fd` + `edk2-arm-vars.fd`), PowerPC OpenBIOS (`openbios-ppc` +
+ * `qemu_vga.ndrv` for Mac OS 9), and keymaps from `assets/qemu-firmware/` into
+ * `filesDir/qemu-firmware/` so QEMU can boot via `-L <firmwareDir>` and `-drive if=pflash`
+ * on Android without `/usr/share/qemu`.
  */
 object QemuFirmwareManager {
 
     private const val ASSET_ROOT = "qemu-firmware"
-    private const val MARKER_VERSION = "qemu-9.2.0-v3-aarch64"
+    private const val MARKER_VERSION = "qemu-9.2.0-v4-ppc"
     const val EDK2_AARCH64_CODE_FILENAME = "edk2-aarch64-code.fd"
     const val EDK2_ARM_VARS_FILENAME = "edk2-arm-vars.fd"
+    const val OPENBIOS_PPC_FILENAME = "openbios-ppc"
+    const val QEMU_VGA_NDRV_FILENAME = "qemu_vga.ndrv"
 
     fun ensureFirmwareExtracted(context: Context): File? {
         val targetDir = File(context.filesDir, ASSET_ROOT)

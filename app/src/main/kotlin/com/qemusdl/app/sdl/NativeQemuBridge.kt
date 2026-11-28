@@ -2,6 +2,7 @@ package com.qemusdl.app.sdl
 
 import android.content.Context
 import android.view.Surface
+import com.qemusdl.app.data.GuestArchitecture
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -13,19 +14,40 @@ data class RuntimeProbeStatus(
     val sdl2Loaded: Boolean = false,
     val qemuLoaded: Boolean = false,
     val qemuAarch64Loaded: Boolean = false,
+    val qemuPpcLoaded: Boolean = false,
     val hasQemuEntry: Boolean = false,
     val hasLibusb: Boolean = false,
     val hasLibusbWrap: Boolean = false,
     val sdl2Path: String = "",
     val qemuPath: String = "",
     val qemuAarch64Path: String = "",
+    val qemuPpcPath: String = "",
     val detail: String = "Native bridge not initialized"
 ) {
     val isFullQemuReady: Boolean
-        get() = bridgeLoaded && sdl2Loaded && (qemuLoaded || qemuAarch64Loaded) && hasQemuEntry
+        get() = bridgeLoaded && sdl2Loaded && (qemuLoaded || qemuAarch64Loaded || qemuPpcLoaded) && hasQemuEntry
 
     val isBothArchsReady: Boolean
         get() = bridgeLoaded && sdl2Loaded && qemuLoaded && qemuAarch64Loaded && hasQemuEntry
+
+    val isAllArchsReady: Boolean
+        get() = bridgeLoaded && sdl2Loaded && qemuLoaded && qemuAarch64Loaded && qemuPpcLoaded && hasQemuEntry
+
+    fun isReadyForArch(arch: GuestArchitecture): Boolean {
+        if (!bridgeLoaded || !sdl2Loaded || !hasQemuEntry) return false
+        return when (arch) {
+            GuestArchitecture.X86_64 -> qemuLoaded
+            GuestArchitecture.AARCH64 -> qemuAarch64Loaded
+            GuestArchitecture.PPC -> qemuPpcLoaded
+        }
+    }
+
+    val readyArchLabels: List<String>
+        get() = buildList {
+            if (qemuLoaded) add("x86_64")
+            if (qemuAarch64Loaded) add("AArch64")
+            if (qemuPpcLoaded) add("PPC")
+        }
 }
 
 @Serializable

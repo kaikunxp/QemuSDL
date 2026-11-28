@@ -204,4 +204,106 @@ class QemuCommandBuilderTest {
         assertTrue(args.contains("virtio-scsi-pci,id=scsi0"))
         assertTrue(args.any { it.contains("file=/data/isos/alpine-virt-aarch64.iso") && it.contains("media=cdrom") })
     }
+
+    @Test
+    fun buildArgs_ppcMac99PmuForMacOs9() {
+        val vm = VmConfig(
+            name = "Mac OS 9.2.2",
+            architecture = com.qemusdl.app.data.GuestArchitecture.PPC,
+            osPreset = com.qemusdl.app.data.OsPreset.MACOS_9,
+            cpuModel = "g4",
+            cpuCores = 4, // mac99 max_cpus = 1; must be clamped to 1
+            memoryMb = 512,
+            machineType = MachineType.MAC99_PMU,
+            displayDevice = DisplayDevice.STD,
+            resolution = DisplayResolution.XGA_1024x768,
+            bootOrder = com.qemusdl.app.data.BootOrder.CDROM_FIRST,
+            diskInterface = DiskInterface.IDE,
+            networkEnabled = true,
+            networkAdapter = com.qemusdl.app.data.NetworkAdapterModel.SUNGEM,
+            audioEnabled = true,
+            usbXhciEnabled = true, // Must NOT attach qemu-xhci on Mac OS 9
+            usbTabletEnabled = true
+        )
+
+        val args = QemuCommandBuilder.buildArgs(
+            config = vm,
+            resolvedDiskPath = "/data/disks/macos9.qcow2",
+            resolvedIsoPath = "/data/isos/macos922.iso",
+            firmwareDir = "/data/files/qemu-firmware"
+        )
+
+        assertEquals("qemu-system-ppc", args.first())
+        assertTrue(args.contains("mac99,via=pmu,accel=tcg"))
+        val cpuIdx = args.indexOf("-cpu")
+        assertEquals("g4", args[cpuIdx + 1])
+        val smpIdx = args.indexOf("-smp")
+        assertEquals("1", args[smpIdx + 1])
+        val memIdx = args.indexOf("-m")
+        assertEquals("512", args[memIdx + 1])
+
+        // OpenBIOS prom-env + standard VGA + 32-bit resolution mode for qemu_vga.ndrv
+        assertTrue(args.contains("auto-boot?=true"))
+        assertTrue(args.contains("vga-ndrv?=true"))
+        assertTrue(args.contains("1024x768x32"))
+        val vgaIdx = args.indexOf("-vga")
+        assertEquals("std", args[vgaIdx + 1])
+
+        // OpenBIOS boot flag '-boot d' (no SeaBIOS menu=on)
+        val bootIdx = args.indexOf("-boot")
+        assertEquals("d", args[bootIdx + 1])
+
+        // No xHCI / no Venus GL / no intel-hda on Mac OS 9
+        assertFalse(args.any { it.contains("qemu-xhci") })
+        assertFalse(args.any { it.contains("gl=es") })
+        assertFalse(args.any { it.contains("intel-hda") })
+
+        // OHCI USB tablet, IDE disk (index=0) + IDE CD-ROM (index=2), SunGEM NIC, USB audio
+        assertTrue(args.contains("usb-tablet"))
+        assertTrue(args.contains("file=/data/disks/macos9.qcow2,if=ide,index=0,format=qcow2,media=disk,cache=writeback"))
+        assertTrue(args.contains("file=/data/isos/macos922.iso,if=ide,index=2,format=raw,media=cdrom"))
+        assertTrue(args.contains("user,model=sungem"))
+        assertTrue(args.contains("usb-audio,audiodev=snd0"))
+    }
+
+    @Test
+    fun buildArgs_ppcG3BeigeDiskBootWithAtiVgaAndAudio() {
+        val vm = VmConfig(
+            name = "Beige G3",
+            architecture = com.qemusdl.app.data.GuestArchitecture.PPC,
+            osPreset = com.qemusdl.app.data.OsPreset.MACOS_9,
+            cpuModel = "g3",
+            cpuCores = 1,
+            memoryMb = 4096, // PPC max is 2048 MB; must be clamped
+            machineType = MachineType.G3_BEIGE,
+            displayDevice = DisplayDevice.ATI_VGA,
+            resolution = DisplayResolution.SVGA_800x600,
+            bootOrder = com.qemusdl.app.data.BootOrder.DISK_FIRST,
+            diskInterface = DiskInterface.IDE,
+            networkEnabled = true,
+            networkAdapter = com.qemusdl.app.data.NetworkAdapterModel.RTL8139,
+            audioEnabled = true,
+            usbTabletEnabled = false
+        )
+
+        val args = QemuCommandBuilder.buildArgs(
+            config = vm,
+            resolvedDiskPath = "/data/disks/g3.qcow2",
+            firmwareDir = "/data/files/qemu-firmware"
+        )
+
+        assertTrue(args.contains("g3beige,accel=tcg"))
+        val memIdx = args.indexOf("-m")
+        assertEquals("2048", args[memIdx + 1])
+        val bootIdx = args.indexOf("-boot")
+        assertEquals("c", args[bootIdx + 1])
+
+        // ATI Rage 128 Pro display instead of std VGA; no vga-ndrv? prom-env needed
+        assertTrue(args.contains("ati-vga"))
+        assertFalse(args.contains("vga-ndrv?=true"))
+
+        // g3beige needs explicit -usb when usb-audio is enabled even if usb-tablet is off
+        assertTrue(args.contains("-usb"))
+        assertTrue(args.contains("usb-audio,audiodev=snd0"))
+    }
 }

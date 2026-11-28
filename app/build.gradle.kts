@@ -13,13 +13,20 @@ android {
     applicationId = "com.qemusdl.app"
     minSdk = 31
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0.0"
+    versionCode = 2
+    versionName = "1.1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+    val targetAbisProp = providers.gradleProperty("targetAbis").orNull
     ndk {
-      abiFilters += listOf("arm64-v8a", "x86_64")
+      val abis = targetAbisProp
+        ?.split(",")
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.takeIf { it.isNotEmpty() }
+        ?: listOf("arm64-v8a", "x86_64")
+      abiFilters += abis
     }
 
     externalNativeBuild {
@@ -68,8 +75,10 @@ android {
 
   buildTypes {
     release {
+      isDebuggable = false
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
@@ -101,6 +110,7 @@ android {
       keepDebugSymbols += setOf(
         "**/libqemu-system-x86_64.so",
         "**/libqemu-system-aarch64.so",
+        "**/libqemu-system-ppc.so",
         "**/libSDL2.so"
       )
     }
@@ -112,6 +122,13 @@ android {
 
 kotlin {
   jvmToolchain(17)
+}
+
+@Suppress("UnstableApiUsage")
+androidComponents {
+  beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+    variantBuilder.hostTests[com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE]?.enable = true
+  }
 }
 
 dependencies {

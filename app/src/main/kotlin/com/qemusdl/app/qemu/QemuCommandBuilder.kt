@@ -1,5 +1,6 @@
 package com.qemusdl.app.qemu
 
+import com.qemusdl.app.data.BootOrder
 import com.qemusdl.app.data.DiskInterface
 import com.qemusdl.app.data.DisplayDevice
 import com.qemusdl.app.data.GuestArchitecture
@@ -7,8 +8,8 @@ import com.qemusdl.app.data.MachineType
 import com.qemusdl.app.data.VmConfig
 
 /**
- * Generates exact `qemu-system-x86_64` or `qemu-system-aarch64` CLI arguments targeting an
- * in-process SDL2 viewport (`-display sdl`) with VNC explicitly omitted.
+ * Generates exact `qemu-system-x86_64`, `qemu-system-aarch64`, or `qemu-system-ppc` CLI
+ * arguments targeting an in-process SDL2 viewport (`-display sdl`) with VNC explicitly omitted.
  */
 object QemuCommandBuilder {
 
@@ -25,7 +26,7 @@ object QemuCommandBuilder {
         val arch = config.architecture
         args += arch.qemuBinaryName
 
-        // Firmware ROM & keymaps search directory (SeaBIOS, VGABIOS, EDK2 AArch64 UEFI)
+        // Firmware ROM & keymaps search directory (SeaBIOS, VGABIOS, EDK2 AArch64 UEFI, OpenBIOS PPC + qemu_vga.ndrv)
         if (!firmwareDir.isNullOrBlank()) {
             args += listOf("-L", firmwareDir)
         }
@@ -40,8 +41,22 @@ object QemuCommandBuilder {
 
         val effectiveCpu = config.cpuModel.ifBlank { arch.defaultCpuModel }
         args += listOf("-cpu", effectiveCpu)
-        args += listOf("-smp", config.cpuCores.coerceIn(1, 8).toString())
-        args += listOf("-m", config.memoryMb.coerceIn(128, 8192).toString())
+
+        // PowerPC mac99 and g3beige machines support at most 1 CPU core (mc->max_cpus = 1 in QEMU)
+        val effectiveCores = if (arch == GuestArchitecture.PPC) {
+            1
+        } else {
+            config.cpuCores.coerceIn(1, 8)
+        }
+        args += listOf("-smp", effectiveCores.toString())
+
+        // Classic PowerPC Mac machines (mac99 / g3beige) support up to 2048 MB RAM (512 MB recommended for Mac OS 9)
+        val effectiveMemoryMb = if (arch == GuestArchitecture.PPC) {
+            config.memoryMb.coerceIn(64, 2048)
+        } else {
+            config.memoryMb.coerceIn(128, 8192)
+        }
+        args += listOf("-m", effectiveMemoryMb.toString())
 
         // AArch64 (-machine virt) has no SeaBIOS; wire EDK2 UEFI code + per-VM writable NVRAM vars via -drive if=pflash
         if (arch == GuestArchitecture.AARCH64) {
@@ -56,116 +71,164 @@ object QemuCommandBuilder {
             args += listOf("-drive", "if=pflash,format=raw,unit=1,file=$varsPath")
         }
 
+        // PowerPC OpenBIOS PROM environment for clean Mac OS 9 / Mac OS X auto-boot and qemu_vga.ndrv driver loading
+        if (arch == GuestArchitecture.PPC) {
+            args += listOf("-prom-env", "auto-boot?=true")
+            if (config.displayDevice == DisplayDevice.STD || !config.displayDevice.isSupportedOn(arch)) {
+                args += listOf("-prom-env", "vga-ndrv?=true")
+            }
+        }
+
         // Direct SDL2 viewport instead of VNC!
-        // When Venus 3D / virgl acceleration is enabled, gl=es enables SDL2 OpenGLES texture streaming
+        // When Venus 3D / virgl acceleration is enabled (x86_64 / AArch64), gl=es enables SDL2 OpenGLES texture streaming.
         // full-screen=on sets SDL_WINDOW_FULLSCREEN_DESKTOP in QEMU's sdl2.c so that guest mode
-        // switches (SeaBIOS 720x400 -> bootloader 640x480 -> desktop) use SDL_RenderSetLogicalSize
-        // without SDL_SetWindowSize shrinking the Android window dimensions.
+        // switches use SDL_RenderSetLogicalSize without SDL_SetWindowSize shrinking the Android window dimensions.
         // show-cursor=on keeps SDL2 mouse coordinates in window space without Android pointer capture.
-        val isVenusActive = config.venus3dEnabled ||
-            config.displayDevice == DisplayDevice.VIRTIO_VGA_GL ||
-            config.displayDevice == DisplayDevice.VIRTIO_GPU_GL_PCI
+        val isVenusActive = arch != GuestArchitecture.PPC && (
+            config.venus3dEnabled ||
+                config.displayDevice == DisplayDevice.VIRTIO_VGA_GL ||
+                config.displayDevice == DisplayDevice.VIRTIO_GPU_GL_PCI
+            )
         val glArg = if (isVenusActive) "gl=es," else ""
         args += listOf("-display", "sdl,${glArg}window-close=off,full-screen=on,show-cursor=on")
 
-        // Graphics adapter (with Venus Vulkan / Virgl 3D hardware acceleration when enabled)
-        // AArch64 (-machine virt) uses virtio-gpu-pci (and virtio-gpu-gl-pci for Venus) instead of virtio-vga
+        // Graphics adapter
         val hostmemStr = "${config.venusHostMemoryMb.coerceIn(256, 8192)}M"
         val resOpts = "xres=${config.resolution.width},yres=${config.resolution.height}"
-        if (arch == GuestArchitecture.AARCH64) {
-            when (config.displayDevice) {
-                DisplayDevice.RAMFB -> args += listOf("-device", "ramfb")
-                DisplayDevice.BOCHS_DISPLAY -> args += listOf("-device", "bochs-display")
-                else -> {
-                    if (isVenusActive) {
-                        args += listOf(
-                            "-device",
-                            "virtio-gpu-gl-pci,hostmem=$hostmemStr,blob=true,venus=true,$resOpts"
-                        )
-                    } else {
-                        args += listOf("-device", "virtio-gpu-pci,$resOpts")
+        when (arch) {
+            GuestArchitecture.PPC -> {
+                // OpenBIOS + qemu_vga.ndrv uses -g WxHx32 (32-bit Millions of Colors) for Mac OS 9 / OS X
+                args += listOf("-g", "${config.resolution.width}x${config.resolution.height}x32")
+                when (config.displayDevice) {
+                    DisplayDevice.ATI_VGA -> args += listOf("-vga", "none", "-device", "ati-vga")
+                    DisplayDevice.BOCHS_DISPLAY -> args += listOf("-vga", "none", "-device", "bochs-display")
+                    else -> args += listOf("-vga", "std")
+                }
+            }
+            GuestArchitecture.AARCH64 -> {
+                when (config.displayDevice) {
+                    DisplayDevice.RAMFB -> args += listOf("-device", "ramfb")
+                    DisplayDevice.BOCHS_DISPLAY -> args += listOf("-device", "bochs-display")
+                    else -> {
+                        if (isVenusActive) {
+                            args += listOf(
+                                "-device",
+                                "virtio-gpu-gl-pci,hostmem=$hostmemStr,blob=true,venus=true,$resOpts"
+                            )
+                        } else {
+                            args += listOf("-device", "virtio-gpu-pci,$resOpts")
+                        }
                     }
                 }
             }
-        } else {
-            when (config.displayDevice) {
-                DisplayDevice.VIRTIO_VGA_GL -> {
-                    val venusOpts = if (config.venus3dEnabled) ",hostmem=$hostmemStr,blob=true,venus=true" else ""
-                    args += listOf("-device", "virtio-vga-gl$venusOpts,$resOpts")
-                }
-                DisplayDevice.VIRTIO_GPU_GL_PCI -> {
-                    // On x86_64 PC/Q35 (SeaBIOS), use virtio-vga-gl so legacy VGA text/VBE modes
-                    // (SeaBIOS, GRUB, and early kernel console) render immediately in addition to
-                    // VirtIO-GPU 3D / Venus Vulkan acceleration once the guest KMS driver loads.
-                    val venusOpts = if (config.venus3dEnabled) ",hostmem=$hostmemStr,blob=true,venus=true" else ""
-                    args += listOf("-device", "virtio-vga-gl$venusOpts,$resOpts")
-                }
-                DisplayDevice.VIRTIO_VGA -> {
-                    if (config.venus3dEnabled) {
-                        args += listOf("-device", "virtio-vga-gl,hostmem=$hostmemStr,blob=true,venus=true,$resOpts")
-                    } else {
-                        args += listOf("-device", "virtio-vga,$resOpts")
+            GuestArchitecture.X86_64 -> {
+                when (config.displayDevice) {
+                    DisplayDevice.VIRTIO_VGA_GL -> {
+                        val venusOpts = if (config.venus3dEnabled) ",hostmem=$hostmemStr,blob=true,venus=true" else ""
+                        args += listOf("-device", "virtio-vga-gl$venusOpts,$resOpts")
                     }
-                }
-                DisplayDevice.VIRTIO_GPU_PCI -> {
-                    // On x86_64 PC/Q35 (SeaBIOS), use virtio-vga / virtio-vga-gl so BIOS/GRUB output is visible.
-                    if (config.venus3dEnabled) {
-                        args += listOf("-device", "virtio-vga-gl,hostmem=$hostmemStr,blob=true,venus=true,$resOpts")
-                    } else {
-                        args += listOf("-device", "virtio-vga,$resOpts")
+                    DisplayDevice.VIRTIO_GPU_GL_PCI -> {
+                        val venusOpts = if (config.venus3dEnabled) ",hostmem=$hostmemStr,blob=true,venus=true" else ""
+                        args += listOf("-device", "virtio-vga-gl$venusOpts,$resOpts")
                     }
-                }
-                DisplayDevice.RAMFB -> {
-                    args += listOf("-vga", "none", "-device", "ramfb")
-                }
-                DisplayDevice.BOCHS_DISPLAY -> {
-                    args += listOf("-vga", "none", "-device", "bochs-display")
-                }
-                DisplayDevice.STD -> {
-                    args += listOf("-vga", "std")
-                }
-                DisplayDevice.QXL -> {
-                    args += listOf("-device", "qxl-vga")
-                }
-                DisplayDevice.VMWARE -> {
-                    args += listOf("-vga", "vmware")
+                    DisplayDevice.VIRTIO_VGA -> {
+                        if (config.venus3dEnabled) {
+                            args += listOf("-device", "virtio-vga-gl,hostmem=$hostmemStr,blob=true,venus=true,$resOpts")
+                        } else {
+                            args += listOf("-device", "virtio-vga,$resOpts")
+                        }
+                    }
+                    DisplayDevice.VIRTIO_GPU_PCI -> {
+                        if (config.venus3dEnabled) {
+                            args += listOf("-device", "virtio-vga-gl,hostmem=$hostmemStr,blob=true,venus=true,$resOpts")
+                        } else {
+                            args += listOf("-device", "virtio-vga,$resOpts")
+                        }
+                    }
+                    DisplayDevice.RAMFB -> {
+                        args += listOf("-vga", "none", "-device", "ramfb")
+                    }
+                    DisplayDevice.BOCHS_DISPLAY -> {
+                        args += listOf("-vga", "none", "-device", "bochs-display")
+                    }
+                    DisplayDevice.STD -> {
+                        args += listOf("-vga", "std")
+                    }
+                    DisplayDevice.ATI_VGA -> {
+                        args += listOf("-vga", "std")
+                    }
+                    DisplayDevice.QXL -> {
+                        args += listOf("-device", "qxl-vga")
+                    }
+                    DisplayDevice.VMWARE -> {
+                        args += listOf("-vga", "vmware")
+                    }
                 }
             }
         }
 
-        // Boot order
-        args += listOf("-boot", config.bootOrder.qemuFlag)
+        // Boot order (PowerPC OpenBIOS expects concise 'd' / 'c' / 'order=dc' rather than x86 SeaBIOS menu=on)
+        if (arch == GuestArchitecture.PPC) {
+            val ppcBootFlag = when (config.bootOrder) {
+                BootOrder.DISK_FIRST -> "c"
+                BootOrder.CDROM_FIRST -> "d"
+                BootOrder.BOOT_MENU -> "order=dc"
+            }
+            args += listOf("-boot", ppcBootFlag)
+        } else {
+            args += listOf("-boot", config.bootOrder.qemuFlag)
+        }
 
-        // USB controller (Modern xHCI USB 3.0 or legacy USB) & absolute pointer tablet / keyboard
-        // On AArch64 (-machine virt), always attach qemu-xhci + usb-kbd + usb-tablet since virt lacks PS/2
-        val hasXhci = config.usbXhciEnabled ||
-            arch == GuestArchitecture.AARCH64 ||
-            config.usbPassthroughDevices.any { it.enabled }
-        if (arch == GuestArchitecture.AARCH64) {
-            args += listOf("-device", "qemu-xhci,id=xhci")
-            args += listOf("-device", "usb-kbd,bus=xhci.0")
-            args += listOf("-device", "usb-tablet,bus=xhci.0")
-        } else if (hasXhci) {
-            args += listOf("-device", "qemu-xhci,id=xhci")
-            if (config.usbTabletEnabled) {
+        // USB controller & HID input
+        val enabledUsbDevices = config.usbPassthroughDevices.filter { it.enabled }
+        val hasXhci = arch != GuestArchitecture.PPC && (
+            config.usbXhciEnabled ||
+                arch == GuestArchitecture.AARCH64 ||
+                enabledUsbDevices.isNotEmpty()
+            )
+        when (arch) {
+            GuestArchitecture.PPC -> {
+                // mac99 automatically provides a USB 1.1 pci-ohci controller; g3beige only creates it with -usb.
+                // Mac OS 9 does NOT support USB 3.0 xHCI, so usb-tablet, usb-audio, and usb-host attach to OHCI.
+                val needsOhciBus = config.usbTabletEnabled || config.audioEnabled || enabledUsbDevices.isNotEmpty()
+                if (needsOhciBus && effectiveMachine == MachineType.G3_BEIGE) {
+                    args += "-usb"
+                }
+                if (config.usbTabletEnabled) {
+                    args += listOf("-device", "usb-tablet")
+                }
+            }
+            GuestArchitecture.AARCH64 -> {
+                // On AArch64 (-machine virt), always attach qemu-xhci + usb-kbd + usb-tablet since virt lacks PS/2
+                args += listOf("-device", "qemu-xhci,id=xhci")
+                args += listOf("-device", "usb-kbd,bus=xhci.0")
                 args += listOf("-device", "usb-tablet,bus=xhci.0")
             }
-        } else if (config.usbTabletEnabled) {
-            args += listOf("-usb", "-device", "usb-tablet")
+            GuestArchitecture.X86_64 -> {
+                if (hasXhci) {
+                    args += listOf("-device", "qemu-xhci,id=xhci")
+                    if (config.usbTabletEnabled) {
+                        args += listOf("-device", "usb-tablet,bus=xhci.0")
+                    }
+                } else if (config.usbTabletEnabled) {
+                    args += listOf("-usb", "-device", "usb-tablet")
+                }
+            }
         }
 
         // USB Host Passthrough Devices (via UsbManager openDevice /proc/self/fd/<fd> or vendor/product ID)
-        val enabledUsbDevices = config.usbPassthroughDevices.filter { it.enabled }
-        val usbBus = if (hasXhci) "xhci.0" else "usb.0"
+        val usbBus = if (hasXhci) "xhci.0" else "usb-bus.0"
         for (device in enabledUsbDevices) {
             val key = "${device.vendorIdHex}:${device.productIdHex}"
             val activeFd = activeUsbDeviceFds[key] ?: activeUsbDeviceFds[device.deviceName]
             if (activeFd != null && activeFd >= 0) {
-                args += listOf("-device", "usb-host,bus=$usbBus,hostdevice=/proc/self/fd/$activeFd")
+                val busArg = if (arch == GuestArchitecture.PPC) "" else "bus=$usbBus,"
+                args += listOf("-device", "usb-host,${busArg}hostdevice=/proc/self/fd/$activeFd")
             } else {
+                val busArg = if (arch == GuestArchitecture.PPC) "" else "bus=$usbBus,"
                 args += listOf(
                     "-device",
-                    "usb-host,bus=$usbBus,vendorid=0x${device.vendorIdHex},productid=0x${device.productIdHex}"
+                    "usb-host,${busArg}vendorid=0x${device.vendorIdHex},productid=0x${device.productIdHex}"
                 )
             }
         }
@@ -174,30 +237,57 @@ object QemuCommandBuilder {
         val diskTarget = (resolvedDiskPath ?: config.diskPathOrUri).trim()
         if (diskTarget.isNotEmpty()) {
             val format = if (diskTarget.endsWith(".qcow2", ignoreCase = true)) "qcow2" else "raw"
-            if (config.diskInterface == DiskInterface.SATA || (arch == GuestArchitecture.AARCH64 && config.diskInterface == DiskInterface.IDE)) {
-                args += listOf("-device", "ahci,id=ahci")
-                args += listOf("-drive", "id=disk0,file=$diskTarget,if=none,format=$format")
-                args += listOf("-device", "ide-hd,drive=disk0,bus=ahci.0")
-            } else {
-                args += listOf(
-                    "-drive",
-                    "file=$diskTarget,if=${config.diskInterface.qemuIf},format=$format,cache=writeback"
-                )
+            when {
+                arch == GuestArchitecture.PPC -> {
+                    // PowerMac mac99 / g3beige use built-in MacIO IDE controller (index=0 = primary master hard disk)
+                    if (config.diskInterface == DiskInterface.VIRTIO) {
+                        args += listOf(
+                            "-drive",
+                            "file=$diskTarget,if=virtio,format=$format,cache=writeback"
+                        )
+                    } else {
+                        args += listOf(
+                            "-drive",
+                            "file=$diskTarget,if=ide,index=0,format=$format,media=disk,cache=writeback"
+                        )
+                    }
+                }
+                config.diskInterface == DiskInterface.SATA || (arch == GuestArchitecture.AARCH64 && config.diskInterface == DiskInterface.IDE) -> {
+                    args += listOf("-device", "ahci,id=ahci")
+                    args += listOf("-drive", "id=disk0,file=$diskTarget,if=none,format=$format")
+                    args += listOf("-device", "ide-hd,drive=disk0,bus=ahci.0")
+                }
+                else -> {
+                    args += listOf(
+                        "-drive",
+                        "file=$diskTarget,if=${config.diskInterface.qemuIf},format=$format,cache=writeback"
+                    )
+                }
             }
         }
 
         // Bootable ISO / CD-ROM
         val isoTarget = (resolvedIsoPath ?: config.isoPathOrUri).trim()
         if (isoTarget.isNotEmpty()) {
-            if (arch == GuestArchitecture.AARCH64) {
-                // ARM virt has no default IDE bus; attach ISO via virtio-scsi CD-ROM so EDK2 UEFI boots it cleanly
-                args += listOf(
-                    "-device", "virtio-scsi-pci,id=scsi0",
-                    "-drive", "id=cdrom0,file=$isoTarget,if=none,format=raw,readonly=on,media=cdrom",
-                    "-device", "scsi-cd,bus=scsi0.0,drive=cdrom0,bootindex=1"
-                )
-            } else {
-                args += listOf("-cdrom", isoTarget)
+            when (arch) {
+                GuestArchitecture.PPC -> {
+                    // Attach Mac OS 9 / PPC CD-ROM on MacIO secondary IDE master (index=2) for OpenBIOS -boot d
+                    args += listOf(
+                        "-drive",
+                        "file=$isoTarget,if=ide,index=2,format=raw,media=cdrom"
+                    )
+                }
+                GuestArchitecture.AARCH64 -> {
+                    // ARM virt has no default IDE bus; attach ISO via virtio-scsi CD-ROM so EDK2 UEFI boots it cleanly
+                    args += listOf(
+                        "-device", "virtio-scsi-pci,id=scsi0",
+                        "-drive", "id=cdrom0,file=$isoTarget,if=none,format=raw,readonly=on,media=cdrom",
+                        "-device", "scsi-cd,bus=scsi0.0,drive=cdrom0,bootindex=1"
+                    )
+                }
+                GuestArchitecture.X86_64 -> {
+                    args += listOf("-cdrom", isoTarget)
+                }
             }
         }
 
@@ -208,9 +298,14 @@ object QemuCommandBuilder {
             args += listOf("-nic", "none")
         }
 
-        // Audio over SDL2/OpenSL ES (playback-only speaker device so SDL2 never opens an Android microphone capture stream)
+        // Audio over SDL2/OpenSL ES
+        // On PPC (Mac OS 9 / OS X), use usb-audio (native Apple USB Audio Class driver) instead of intel-hda
         if (config.audioEnabled) {
-            args += listOf("-audiodev", "sdl,id=snd0", "-device", "intel-hda", "-device", "hda-output,audiodev=snd0")
+            if (arch == GuestArchitecture.PPC) {
+                args += listOf("-audiodev", "sdl,id=snd0", "-device", "usb-audio,audiodev=snd0")
+            } else {
+                args += listOf("-audiodev", "sdl,id=snd0", "-device", "intel-hda", "-device", "hda-output,audiodev=snd0")
+            }
         }
 
         // Extra user flags (whitespace split, preserving quoted tokens)
