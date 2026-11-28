@@ -288,4 +288,5 @@ The script automatically downloads, patches, cross-compiles with `-O3` release o
 
 ## Vibe Coding Disclaimer
 
+
 This project was **vibecoded end-to-end**. Every Kotlin screen, C++ JNI bridge, OpenGL shader, and NDK build script was generated through conversational AI prompting. Feel free to fork, remix, and keep the vibes going!
