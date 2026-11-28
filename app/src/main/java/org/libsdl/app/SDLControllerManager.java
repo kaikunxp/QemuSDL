@@ -852,6 +852,13 @@ class SDLGenericMotionListener_API26 extends SDLGenericMotionListener_API24 {
             }
         }
 
+        // Stylus air-hover and barrel button support (Moto Pen Ultra, S Pen, USI styluses)
+        if (v instanceof SDLSurface && SDLSurface.isStylusEvent(event)) {
+            if (((SDLSurface) v).handleStylusHover(event)) {
+                return true;
+            }
+        }
+
         // Event was not managed
         return false;
     }

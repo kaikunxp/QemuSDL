@@ -73,6 +73,7 @@
             android:preferMinimalPostProcessing="true"
             android:process=":qemu_vm"
             android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
             android:theme="@style/Theme.QemuSDL" />
 
         <!-- Fallback OpenGL ES 3.0 SDL2-compatible interactive viewport (when ABI lacks native QEMU .so) -->
